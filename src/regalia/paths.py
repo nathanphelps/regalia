@@ -20,6 +20,11 @@ CONFIG_DIR = xdg_config_home() / "regalia"
 DATA_DIR = xdg_data_home() / "regalia"
 CACHE_DIR = xdg_cache_home() / "regalia"
 STORE_DIR = DATA_DIR / "store"
+# Archives the tool owns. A download folder is a terrible library: the browser
+# renames on collision, the desktop offers to empty it, and the catalog keys a
+# mod by its archive path, so a file that moves takes its record with it and
+# leaves an installed mod with no entry.
+LIBRARY_DIR = DATA_DIR / "library"
 CATALOG_FILE = DATA_DIR / "catalog.json"
 CONFIG_FILE = CONFIG_DIR / "config.toml"
 

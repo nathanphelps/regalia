@@ -11,12 +11,26 @@ from .paths import CONFIG_DIR, CONFIG_FILE
 
 
 def default_scan_dirs() -> list[Path]:
-    """Where a new user's downloads land.
+    """No extra folders by default. The library is scanned regardless.
+
+    A download folder used to be the default and it was a poor one. Everything
+    the browser saves lands there, so an office document and a game from another
+    site both arrive in the mod list as UNSUPPORTED. The folder is also the one
+    the desktop offers to empty, and the catalog keys a mod by its archive path.
+
+    `suggested_import_dir` still points at it, because it is exactly the right
+    place to import *from*.
+    """
+    return []
+
+
+def suggested_import_dir() -> Path:
+    """Where the user's browser saves things, for the import prompt.
 
     A localised desktop names this folder in the user's own language, so the
     answer comes from the desktop settings rather than a hardcoded "Downloads".
     """
-    return [download_dir()]
+    return download_dir()
 
 
 def _toml_string(value: object) -> str:

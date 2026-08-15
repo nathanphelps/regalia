@@ -51,6 +51,107 @@ class ModAction:
     replaces: str | None = None  # the slug of the variant being swapped out
 
 
+class PartsScreen(Screen[bool]):
+    """Choose which pak sets of one archive run.
+
+    Most archives hold one and never reach this screen. The ones that hold
+    twenty-four hold them because the author offered choices, and linking all of
+    them hands the game two dozen claims on one mesh.
+    """
+
+    BINDINGS = [
+        Binding("space", "toggle", "turn on/off"),
+        Binding("enter", "toggle", "turn on/off", show=False),
+        Binding("escape", "back", "back"),
+        Binding("a", "all_off", "none"),
+        *[Binding(key, "nothing", "", show=False) for key in ("i", "e", "x", "r", "n")],
+    ]
+
+    def action_nothing(self) -> None:
+        return None
+
+    def __init__(self, mod: Mod) -> None:
+        super().__init__()
+        self.mod = mod
+        self.changed = False
+
+    def compose(self) -> ComposeResult:
+        yield Static(Content.styled(self.mod.title, "bold"), id="parts-title")
+        yield Static(id="parts-hint")
+        yield DataTable(id="parts-table", cursor_type="row")
+        yield Footer()
+
+    def on_mount(self) -> None:
+        table = self.query_one("#parts-table", DataTable)
+        table.add_columns("on", "group", "part", "writes")
+        self.refresh_rows()
+
+    def refresh_rows(self) -> None:
+        from . import components
+
+        table = self.query_one("#parts-table", DataTable)
+        cursor = table.cursor_row
+        table.clear()
+
+        grouped = components.groups(self.mod.components)
+        self._order = []
+        for number, group in enumerate(grouped, start=1):
+            exclusive = len(group) > 1
+            for component in group:
+                self._order.append(component)
+                mark = str(number) if exclusive else "+"
+                assets = (
+                    f"{len(component.assets)} asset(s)"
+                    if component.is_readable
+                    else "unreadable"
+                )
+                table.add_row(
+                    Content.styled("on" if component.enabled else "", "$success"),
+                    Content.styled(mark, "$accent" if exclusive else "$text-muted"),
+                    Content(component.label),
+                    Content.styled(assets, "$text-muted"),
+                )
+
+        exclusive_groups = sum(1 for group in grouped if len(group) > 1)
+        hint = (
+            f"{len(self.mod.components)} parts. A number marks a group whose parts "
+            "overwrite each other — only one of those can run. A + runs alongside."
+            if exclusive_groups
+            else f"{len(self.mod.components)} parts, none of which overlap."
+        )
+        self.query_one("#parts-hint", Static).update(
+            Content.styled(hint, "$text-muted")
+        )
+        if self._order:
+            table.move_cursor(row=min(max(cursor, 0), len(self._order) - 1))
+
+    def action_toggle(self) -> None:
+        from . import components
+
+        table = self.query_one("#parts-table", DataTable)
+        row = table.cursor_row
+        if not 0 <= row < len(self._order):
+            return
+        component = self._order[row]
+        if component.enabled:
+            component.enabled = False
+        else:
+            displaced = components.enable(component, self.mod.components)
+            if displaced:
+                self.notify(f"turned off {len(displaced)} part(s) it would overwrite")
+        self.changed = True
+        self.refresh_rows()
+
+    def action_all_off(self) -> None:
+        for component in self.mod.components:
+            component.enabled = False
+        self.changed = True
+        self.refresh_rows()
+
+    def action_back(self) -> None:
+        self.dismiss(self.changed)
+
+
 @dataclass(frozen=True, slots=True)
 class CollectionAction:
     kind: str  # "install" or "browse"

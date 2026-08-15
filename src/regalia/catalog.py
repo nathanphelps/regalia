@@ -6,11 +6,13 @@ import hashlib
 import json
 from pathlib import Path
 
-from . import archive, naming
-from .model import Mod, NexusInfo, State
+from . import archive, components, library, naming
+from .model import Component, Mod, NexusInfo, State
 from .paths import CATALOG_FILE, DATA_DIR, STORE_DIR
 
-CATALOG_VERSION = 2
+# 3 replaced the flat "files" list with components, so one archive can hold
+# several pak sets and only the chosen ones are linked.
+CATALOG_VERSION = 3
 
 
 class Catalog:
@@ -57,7 +59,7 @@ class Catalog:
         found: list[Mod] = []
         self.patch_archive = None
 
-        for path in archive.find_archives(scan_dirs):
+        for path in archive.find_archives(library.roots(scan_dirs)):
             entries = archive.list_entries(path)
             if not entries:
                 log.append(f"unreadable: {path.name}")
@@ -71,6 +73,7 @@ class Catalog:
             parsed = naming.parse(path.name)
             slug = self._unique_slug(parsed, path, claimed)
             files = archive.mod_files(entries)
+            listed = components.from_entries(entries)
 
             # An archive is identified by its path, not by its slug. Two files
             # can describe the same hero, variant and version, and keying the
@@ -93,24 +96,91 @@ class Catalog:
             mod.nexus_id = parsed.nexus_id
             mod.size = sum(entry.size for entry in files)
 
-            if not files:
+            if not listed:
                 mod.state = State.UNSUPPORTED
                 mod.note = "no .pak file inside"
                 log.append(f"unsupported: {path.name} — no .pak inside")
             else:
-                mod.files = [Path(entry.name).name for entry in files]
+                # The extracted copy is the better source: it says what each
+                # container actually claims, which the archive listing cannot.
+                # The listing is all there is until the mod is installed.
+                store = STORE_DIR / slug
+                on_disk = components.discover(store) if store.is_dir() else []
+                if note := self._adopt(mod, on_disk or listed):
+                    log.append(f"{mod.title}: {note}")
                 # The inner pak name decides load order, not the archive name.
                 mod.has_load_order = any(
-                    naming.LOAD_ORDER_SUFFIX.search(name) for name in mod.files
+                    naming.LOAD_ORDER_SUFFIX.search(item.stem)
+                    for item in mod.components
                 )
                 if mod.state is State.UNSUPPORTED:
                     mod.state = State.AVAILABLE
 
             found.append(mod)
 
+        found += self._keep_orphans(previous, {mod.source for mod in found}, log)
         self.mods = sorted(found, key=lambda m: (m.hero, m.variant))
         log += self.verify(mods_dir)
         return log
+
+    @staticmethod
+    def _keep_orphans(
+        previous: dict[Path, Mod], seen: set[Path], log: list[str]
+    ) -> list[Mod]:
+        """Hold on to installed mods whose archive is no longer where it was.
+
+        Dropping the record would leave the extracted files and the game links
+        with nothing that admits to owning them, and the user with a mod they
+        cannot uninstall from the tool that installed it. The mod keeps working;
+        only re-identifying it needs the archive back.
+        """
+        kept: list[Mod] = []
+        for source, mod in previous.items():
+            if source in seen or source.exists():
+                continue
+            if not (STORE_DIR / mod.slug).is_dir():
+                continue
+            mod.note = f"archive missing from {source.parent}"
+            kept.append(mod)
+        if kept:
+            log.append(f"{len(kept)} installed mod(s) kept though the archive is gone")
+        return kept
+
+    @staticmethod
+    def _adopt(mod: Mod, found: list[Component]) -> str:
+        """Refresh the component list, keeping the user's choices where valid.
+
+        Returns a note when the selection had to be repaired. A catalog written
+        before components existed says every pak set is on, because that is what
+        the old installer did — it linked all of them. Left alone that hands the
+        game ten claims on one mesh, so an unresolvable selection is narrowed
+        here and the caller reports it.
+        """
+        remembered = {(item.folder, item.stem): item.enabled for item in mod.components}
+        for item in found:
+            if (item.folder, item.stem) in remembered:
+                item.enabled = remembered[(item.folder, item.stem)]
+
+        if not remembered:
+            components.choose_default(found)
+            mod.components = found
+            return ""
+
+        dropped = 0
+        kept: list[Component] = []
+        for item in found:
+            if not item.enabled:
+                continue
+            if components.clashes(item, kept):
+                item.enabled = False
+                dropped += 1
+            else:
+                kept.append(item)
+
+        mod.components = found
+        if dropped:
+            return f"turned off {dropped} option(s) that overwrote the one kept"
+        return ""
 
     @staticmethod
     def _unique_slug(
@@ -147,8 +217,13 @@ class Catalog:
                 continue
             store = STORE_DIR / mod.slug
             extracted = store.is_dir() and any(store.iterdir())
-            linked = extracted and all(
-                (mods_dir / name).is_symlink() for name in mod.files
+            # A mod with every option switched off holds no names in the game
+            # folder. That is disabled, not installed, and "all of nothing is
+            # true" would otherwise call it installed.
+            linked = (
+                extracted
+                and bool(mod.files)
+                and all((mods_dir / name).is_symlink() for name in mod.files)
             )
 
             if not extracted:

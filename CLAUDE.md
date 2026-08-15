@@ -13,6 +13,8 @@ uv run regalia                   # the desktop application
 uv run regalia tui               # the terminal application
 uv run regalia doctor            # every environment check, with the fix for each
 uv run regalia status            # the current state, one line per fact
+uv run regalia import ~/Downloads   # bring existing archives into the library
+uv run regalia reset             # list what a reset would remove; --yes does it
 
 # Always `python -m pytest`. A stray pytest on the PATH otherwise wins, and it
 # runs against the wrong interpreter.
@@ -35,11 +37,11 @@ CI runs the lint, the format check, the tests, and the build. All four must pass
 
 ### The layer rule
 
-`archive`, `catalog`, `installer`, `patch`, `paths`, `environment`, `readiness`,
-`conflicts`, `naming`, `heroes`, `variants`, `steam` and `nexus` are the domain.
-They import no Qt and no Textual. Both interfaces are consumers of the same
-objects. Put logic in the domain, never in a page or a screen, or the two
-interfaces drift apart.
+`archive`, `catalog`, `components`, `conflicts`, `environment`, `heroes`,
+`installer`, `iostore`, `library`, `maintenance`, `naming`, `nexus`, `patch`,
+`paths`, `readiness`, `steam` and `variants` are the domain. They import no Qt
+and no Textual. Both interfaces are consumers of the same objects. Put logic in
+the domain, never in a page or a screen, or the two interfaces drift apart.
 
 - `src/regalia/gui/` — the Qt application. `pages.py` holds the pages,
   `tasks.py` runs every slow call on a `QThreadPool` and reports it as an
@@ -48,6 +50,40 @@ interfaces drift apart.
   `@work(thread=True)`.
 - `src/regalia/cli.py` — the entry point for both, plus `doctor`, `status`, the
   `nxm://` handler and the desktop entry commands.
+
+### Archive, component, deployment
+
+Three layers, named apart on purpose. An **archive** is the file the user
+downloaded. A **component** is one pak set inside it — a `.pak` with its `.ucas`
+and `.utoc` — and it is the smallest thing the game loads and the smallest thing
+the user can switch on. A `Mod` is the archive plus what is known about it.
+
+Most archives hold one component. Some hold twenty-four, because the author
+offered a body-size ladder and a physics add-on in one download, and expects two
+of them to run. An earlier version linked every pak file it found, which handed
+Unreal ten claims on one mesh and let it pick one at random.
+
+`components.overlap()` decides what may run together, and it derives the answer
+rather than guessing it: two components collide when they write the same asset
+path. `iostore` reads those paths out of the `.utoc` directory index in pure
+Python — no Rust extension, no `repak` — and refuses an encrypted container
+rather than inventing paths for it. When a container cannot be read the rule
+falls back to "siblings in one folder are alternatives" and says so.
+
+The same rule powers `conflicts`. Two mods clash when they write the same asset,
+never because they touch the same hero: a hero has many costumes, and forty mods
+covering forty costumes is a healthy library that a hero-level check would
+condemn wholesale.
+
+### The library, and why it is not the downloads folder
+
+`library` owns `~/.local/share/regalia/library`. Downloads land there and it is
+always scanned, whatever `scan_dirs` says. A downloads folder was the old default
+and it was a bad one: everything the browser saves arrives in the mod list, the
+desktop offers to empty it, a repeat download becomes "mod (1).zip", and because
+a mod is keyed by its archive path a file that moves takes its record with it.
+`catalog` now also keeps an installed mod whose archive has gone, so the store
+and the links always have an owner.
 
 ### The store, and why the game folder holds only symlinks
 
@@ -66,10 +102,12 @@ the whole design exists for.
 | `~/.config/regalia/config.toml` | the game root, the Steam root, the scan folders, the theme |
 | `~/.config/regalia/credentials.toml` | the Nexus API key, mode 0600 |
 | `~/.local/share/regalia/catalog.json` | every known mod, its state, and the MD5 cache |
-| `~/.local/share/regalia/store/` | the extracted mod files |
+| `~/.local/share/regalia/library/` | the archives the tool owns; downloads land here |
+| `~/.local/share/regalia/store/` | the extracted mod files, in the archive's own folder tree |
 | `~/.cache/regalia/images/` | Nexus artwork; a cleaner may delete it |
 
-`catalog.Catalog.rescan()` rebuilds the list from the scan folders on every run.
+`catalog.Catalog.rescan()` rebuilds the list from the library and the scan
+folders on every run.
 It keys carried-over records by archive path, not by slug, because two archives
 can produce the same slug. `verify()` then compares the record against the game
 folder and marks a mod `BROKEN` when its links are gone.

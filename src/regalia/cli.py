@@ -10,8 +10,10 @@ import argparse
 import sys
 from pathlib import Path
 
+from . import maintenance
 from .archive import NoExtractor, require_extractor
 from .config import Config
+from .maintenance import SCOPES
 
 TUI_MISSING = (
     "The terminal interface is not installed. Add it with:\n"
@@ -45,6 +47,29 @@ def _build_parser() -> argparse.ArgumentParser:
     sub.add_parser("install-desktop-entry", help="add regalia to the menu")
     sub.add_parser("remove-desktop-entry", help="take regalia out of the menu")
     sub.add_parser("status", help="print the current state and exit")
+
+    importer = sub.add_parser(
+        "import", help="copy archives into the library the tool manages"
+    )
+    importer.add_argument("paths", nargs="+", type=Path, help="files or folders")
+    importer.add_argument(
+        "--move",
+        action="store_true",
+        help="move instead of copying, leaving the source folder empty",
+    )
+
+    resetter = sub.add_parser(
+        "reset", help="remove what the tool made; lists it first and asks"
+    )
+    resetter.add_argument(
+        "scopes",
+        nargs="*",
+        help=f"any of: {', '.join(SCOPES)}, or 'all' for everything but the library",
+    )
+    resetter.add_argument(
+        "--yes", action="store_true", help="do it, rather than only listing it"
+    )
+
     cleaner = sub.add_parser(
         "clean", help="list downloads that never finished; -y deletes them"
     )
@@ -82,7 +107,7 @@ def _handle_nxm(url: str, config: Config) -> int:
 
     This runs without a terminal, so every result goes to the desktop.
     """
-    from . import credentials, nxm
+    from . import credentials, library, nxm
     from .nexus import NexusClient, NexusError
     from .nexus.download import download_file
 
@@ -101,7 +126,10 @@ def _handle_nxm(url: str, config: Config) -> int:
         print(message, file=sys.stderr)
         return 3
 
-    destination = config.scan_dirs[0]
+    # Into the library, never the browser's download folder. A file there gets
+    # renamed on a repeat download and swept up by the desktop cleaner, and the
+    # catalog keys a mod by its archive path.
+    destination = library.ensure()
     nxm.notify("regalia", f"Downloading mod {link.mod_id}…")
     try:
         path = download_file(
@@ -147,6 +175,74 @@ def _status(config: Config) -> int:
     owner = "ours" if nxm.is_registered() else "not ours"
     print(f"nxm handler : {handler or 'none'}  ({owner})")
     print(f"game domain : {GAME_DOMAIN}")
+    return 0
+
+
+def _import(paths: list[Path], move: bool, config: Config) -> int:
+    """Bring archives into the library so the catalog stops depending on them."""
+    from . import library
+
+    log = library.import_all([path.expanduser() for path in paths], move)
+    for line in log:
+        print(line)
+    count, size = library.size()
+    print(f"library: {count} archive(s), {maintenance.human(size)}")
+    return 0
+
+
+def _reset(scopes: list[str], confirmed: bool, config: Config) -> int:
+    """List what a reset would remove, and remove it only when told to.
+
+    The listing is the default because the scopes differ in cost. Unlinking is
+    reversible in a second; dropping the library means downloading a collection
+    again, so "all" leaves it alone and the user has to name it.
+    """
+    from .catalog import Catalog
+    from .paths import GameNotFound, discover_game
+
+    if not scopes:
+        print("Say what to reset. Scopes:\n")
+        for scope in SCOPES:
+            mark = "  (not in 'all')" if scope in maintenance.DESTRUCTIVE else ""
+            print(f"  {scope:<12} {maintenance.DESCRIPTIONS[scope]}{mark}")
+        print("\n  all          everything above except the library")
+        print("\nAdd --yes to carry it out. Example: regalia reset links store --yes")
+        return 0
+
+    if "all" in scopes:
+        scopes = [scope for scope in SCOPES if scope not in maintenance.DESTRUCTIVE]
+
+    mods_dir = None
+    try:
+        mods_dir = discover_game(config.game_root).mods
+    except GameNotFound:
+        pass
+
+    catalog = Catalog.load()
+    claimed = {name for mod in catalog.mods for name in mod.all_files}
+
+    try:
+        todo = maintenance.plan(scopes, mods_dir, claimed)
+    except ValueError as error:
+        print(error, file=sys.stderr)
+        return 2
+
+    if todo.is_empty:
+        print("Nothing to remove.")
+        return 0
+
+    for scope, items in todo.by_scope().items():
+        size = maintenance.human(sum(item.bytes for item in items))
+        print(f"{scope:<12} {len(items):>5} item(s)  {size:>10}")
+        print(f"             {maintenance.DESCRIPTIONS[scope]}")
+    print(f"\ntotal: {todo.count} item(s), {maintenance.human(todo.bytes)}")
+
+    if not confirmed:
+        print("\nNothing was removed. Add --yes to carry this out.")
+        return 0
+
+    for line in maintenance.run(todo):
+        print(line)
     return 0
 
 
@@ -205,7 +301,7 @@ def main() -> int:
     config = _config_from(args)
 
     # Everything except the reports needs to be able to open an archive.
-    if args.command not in ("doctor", "status"):
+    if args.command not in ("doctor", "status", "reset"):
         try:
             require_extractor()
         except NoExtractor as error:
@@ -214,6 +310,10 @@ def main() -> int:
 
     if args.command == "nxm":
         return _handle_nxm(args.url, config)
+    if args.command == "import":
+        return _import(args.paths, args.move, config)
+    if args.command == "reset":
+        return _reset(args.scopes, args.yes, config)
     if args.command == "register-nxm":
         from . import nxm
 

@@ -42,7 +42,17 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .. import conflicts, credentials, installer, nxm, patch, steam, variants
+from .. import (
+    components,
+    conflicts,
+    credentials,
+    installer,
+    library,
+    nxm,
+    patch,
+    steam,
+    variants,
+)
 from ..catalog import Catalog
 from ..config import Config
 from ..model import Mod, State
@@ -458,6 +468,19 @@ class LibraryPage(QWidget):
         self.detail.setWordWrap(True)
         detail_layout.addWidget(self.detail_title)
         detail_layout.addWidget(self.detail)
+        # The parts of one archive. Most mods have exactly one and the section
+        # stays hidden; the ones that hold twenty-four are why it exists.
+        self.parts_title = section_title("Parts of this mod")
+        detail_layout.addWidget(self.parts_title)
+        self.parts_hint = QLabel()
+        self.parts_hint.setWordWrap(True)
+        self.parts_hint.setObjectName("partsHint")
+        detail_layout.addWidget(self.parts_hint)
+        self.parts_list = QListWidget()
+        self.parts_list.setMaximumHeight(210)
+        self.parts_list.itemChanged.connect(self._part_toggled)
+        detail_layout.addWidget(self.parts_list)
+
         detail_layout.addWidget(section_title("Variants and versions"))
         self.variant_list = QListWidget()
         self.variant_list.setMaximumHeight(190)
@@ -628,6 +651,7 @@ class LibraryPage(QWidget):
             self.detail.setText("")
             self.cover.set_content("", "Select a mod")
             self.variant_list.clear()
+            self._show_parts(None)
             return
         self.detail_title.setText(mod.title)
         self._cover_slug = mod.slug
@@ -648,6 +672,7 @@ class LibraryPage(QWidget):
             notes.append(f"NOTE · {mod.variant_note}")
         self.detail.setText("\n\n".join(filter(None, notes)))
         self.cover.set_content(image, mod.title, mod.state.value.upper())
+        self._show_parts(mod)
         self.variant_list.clear()
         siblings = self.variant_siblings(mod)
         for sibling in siblings:
@@ -667,6 +692,85 @@ class LibraryPage(QWidget):
             self.variant_list.addItem(item)
             if sibling is mod:
                 self.variant_list.setCurrentItem(item)
+
+    def _show_parts(self, mod: Mod | None) -> None:
+        """List the archive's pak sets, grouped into the choices the author made.
+
+        A mod with one part hides the whole section: showing a single tickbox
+        that must stay ticked teaches the user nothing and takes the space the
+        artwork wants.
+        """
+        # Repopulating fires itemChanged for every row. Without the guard each
+        # rebuild would be read back as the user unticking things.
+        self._loading_parts = True
+        try:
+            self.parts_list.clear()
+            visible = bool(mod and mod.has_choices)
+            self.parts_title.setVisible(visible)
+            self.parts_hint.setVisible(visible)
+            self.parts_list.setVisible(visible)
+            if not visible or mod is None:
+                return
+
+            grouped = components.groups(mod.components)
+            alternatives = sum(1 for group in grouped if len(group) > 1)
+            self.parts_hint.setText(
+                f"{len(mod.components)} parts in {len(grouped)} group(s). "
+                f"Parts in one group overwrite each other, so only one can run."
+                if alternatives
+                else f"{len(mod.components)} parts, none of which overlap."
+            )
+
+            for number, group in enumerate(grouped, start=1):
+                exclusive = len(group) > 1
+                for component in group:
+                    mark = f"[{number}] " if exclusive else "[+] "
+                    label = f"{mark}{component.label}"
+                    if not component.is_readable:
+                        label += "  (contents unreadable)"
+                    item = QListWidgetItem(label)
+                    item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+                    item.setCheckState(
+                        Qt.CheckState.Checked
+                        if component.enabled
+                        else Qt.CheckState.Unchecked
+                    )
+                    item.setData(
+                        Qt.ItemDataRole.UserRole, (component.folder, component.stem)
+                    )
+                    self.parts_list.addItem(item)
+        finally:
+            self._loading_parts = False
+
+    def _part_toggled(self, item: QListWidgetItem) -> None:
+        """Turn a part on or off, and switch off whatever it would overwrite."""
+        if getattr(self, "_loading_parts", False):
+            return
+        mod = self.current_mod()
+        if mod is None:
+            return
+        key = item.data(Qt.ItemDataRole.UserRole)
+        component = next(
+            (item_ for item_ in mod.components if (item_.folder, item_.stem) == key),
+            None,
+        )
+        if component is None:
+            return
+
+        if item.checkState() == Qt.CheckState.Checked:
+            displaced = components.enable(component, mod.components)
+            if displaced:
+                names = ", ".join(other.label for other in displaced[:3])
+                self.context.notify(f"Switched off {len(displaced)} part(s): {names}")
+        else:
+            component.enabled = False
+
+        try:
+            installer.apply_selection(mod, self.context.game.mods)
+        except Exception as error:  # the game folder can refuse a link
+            self.context.notify(str(error), True)
+        self.context.catalog.save()
+        self.refresh()
 
     def _load_detail_cover(self) -> None:
         mod = self.context.catalog.by_slug(self._cover_slug)
@@ -1135,7 +1239,7 @@ class ModDetailDialog(QDialog):
                 self.context.client,
                 self.mod.mod_id,
                 file.file_id,
-                self.context.config.scan_dirs[0],
+                library.ensure(),
                 file_name=file.name,
                 on_progress=bytes_progress,
             )
@@ -1589,7 +1693,7 @@ class CollectionDialog(QDialog):
             outcome = collection_ops.install(
                 self.context.client,
                 plan,
-                self.context.config.scan_dirs[0],
+                library.ensure(),
                 on_item=item,
             )
             if self.context.game:

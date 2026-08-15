@@ -145,32 +145,51 @@ def _game_check(game: GamePaths | None, error: str, installs) -> Check:
 
 
 def _scan_check(config: Config) -> Check:
-    missing = [path for path in config.scan_dirs if not path.is_dir()]
-    unwritable = [
-        path
-        for path in config.scan_dirs
-        if path.is_dir() and not os.access(path, os.W_OK)
-    ]
-    listed = ", ".join(str(path) for path in config.scan_dirs) or "none set"
+    """The library, plus any extra folders the user asked to watch.
 
-    if unwritable:
-        names = ", ".join(str(path) for path in unwritable)
+    The library is where downloads land and it is always read, so the check is
+    about whether the tool can write there. Extra folders are optional, and one
+    that has gone missing is worth a note rather than a block.
+    """
+    from . import library
+    from .paths import LIBRARY_DIR
+
+    count, total = library.size()
+    listed = f"{LIBRARY_DIR} — {count} archive(s)"
+    extra = [path for path in config.scan_dirs]
+    if extra:
+        listed += f"; also watching {', '.join(str(path) for path in extra)}"
+
+    parent = LIBRARY_DIR if LIBRARY_DIR.is_dir() else LIBRARY_DIR.parent
+    if parent.is_dir() and not os.access(parent, os.W_OK):
         return Check(
-            "Downloads",
+            "Library",
             Level.BLOCKED,
             listed,
-            f"Cannot write to {names}. Downloads land there, so choose another "
-            "folder in Settings.",
+            f"Cannot write to {parent}. Downloads land there, so nothing can be "
+            "installed until it is writable.",
         )
+
+    missing = [path for path in extra if not path.is_dir()]
     if missing:
         names = ", ".join(str(path) for path in missing)
         return Check(
-            "Downloads",
+            "Library",
             Level.WARN,
             listed,
-            f"{names} does not exist yet. Setup can create it.",
+            f"{names} does not exist. Remove it in Settings, or create it.",
+            essential=False,
         )
-    return Check("Downloads", Level.OK, listed)
+    if not count and not extra:
+        return Check(
+            "Library",
+            Level.WARN,
+            listed,
+            "No archives yet. Download one through Nexus, or run "
+            "'regalia import ~/Downloads' to bring in what you already have.",
+            essential=False,
+        )
+    return Check("Library", Level.OK, listed)
 
 
 def _key_check() -> Check:

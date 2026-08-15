@@ -21,7 +21,7 @@ from textual.widgets import (
     TabPane,
 )
 
-from . import conflicts, credentials, installer, patch, steam
+from . import conflicts, credentials, installer, library, patch, steam
 from .catalog import Catalog
 from .config import Config
 from .environment import steam_installs
@@ -34,7 +34,13 @@ from .nexus.models import Collection, NexusMod
 from .nexus.updates import check as check_updates
 from .panes import CollectionsPane, KeyPrompt, NexusPane
 from .paths import CONFIG_FILE, DATA_DIR, GameNotFound, GamePaths, discover_game
-from .screens import CollectionAction, CollectionDetail, ModAction, ModDetail
+from .screens import (
+    CollectionAction,
+    CollectionDetail,
+    ModAction,
+    ModDetail,
+    PartsScreen,
+)
 
 PARCHMENT = Theme(
     name="parchment",
@@ -109,6 +115,7 @@ class RegaliaApp(App[None]):
         ("d", "disable", "disable"),
         ("e", "enable", "enable"),
         ("x", "remove", "remove"),
+        ("p", "parts", "parts"),
         ("r", "rescan", "rescan"),
         ("n", "identify", "identify"),
         ("u", "check_updates", "updates"),
@@ -482,7 +489,7 @@ class RegaliaApp(App[None]):
                 self.client,
                 mod_id,
                 file_id,
-                self.config.scan_dirs[0],
+                library.ensure(),
                 on_progress=progress,
             )
         except NexusError as error:
@@ -534,7 +541,7 @@ class RegaliaApp(App[None]):
                 self.client,
                 mod.mod_id,
                 file_id,
-                self.config.scan_dirs[0],
+                library.ensure(),
                 on_progress=progress,
             )
         except NexusError as error:
@@ -709,6 +716,29 @@ class RegaliaApp(App[None]):
             self._run_install(pending, overwrite=True)
         else:
             self.action_install()
+
+    def action_parts(self) -> None:
+        """Choose which pak sets of the mod under the cursor run."""
+        mod = self.current_mod()
+        if mod is None:
+            return
+        if not mod.has_choices:
+            self.notify("this mod has only one part")
+            return
+
+        def applied(changed: bool | None) -> None:
+            if not changed:
+                return
+            if self.game and mod.is_present:
+                try:
+                    installer.apply_selection(mod, self.game.mods)
+                except OSError as error:
+                    self.notify(str(error), severity="error")
+            self.catalog.save()
+            self.log_line(f"[green]parts[/] {mod.title}: {len(mod.active)} running")
+            self.refresh_table()
+
+        self.push_screen(PartsScreen(mod), applied)
 
     def action_remove(self) -> None:
         if self.game is None:
@@ -1278,7 +1308,7 @@ class RegaliaApp(App[None]):
     @work(thread=True, exclusive=True, group="nexus")
     def run_collection(self, plan: nexus_collections.Plan) -> None:
         self._cancel_run = False
-        destination = self.config.scan_dirs[0]
+        destination = library.ensure()
 
         def on_item(index: int, total: int, mod) -> None:
             self.call_from_thread(

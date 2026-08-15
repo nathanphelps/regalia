@@ -1,4 +1,16 @@
-"""The mod record and its states."""
+"""The mod record and its states.
+
+Three layers, deliberately named apart. An **archive** is the file the user
+downloaded. A **component** is one pak set inside it — a ".pak" with its
+".ucas" and ".utoc" — and it is the smallest thing the game can load and the
+smallest thing the user can turn on. A `Mod` is the archive plus everything
+known about it.
+
+The distinction is not pedantry. One archive in a normal library holds
+twenty-four components, of which the author expects two to run. Managers that
+call all three layers "mod" end up installing all twenty-four, and the Nexus
+Mods app rewrote its core model over exactly this ambiguity.
+"""
 
 from __future__ import annotations
 
@@ -73,6 +85,67 @@ class NexusInfo:
 
 
 @dataclass(slots=True)
+class Component:
+    """One pak set: the ".pak", ".ucas" and ".utoc" that share a stem.
+
+    `folder` is where the set sat inside the archive. It carries the author's
+    intent — sibling folders are almost always alternatives — and it is the only
+    grouping hint available for a container that cannot be read.
+
+    `assets` is the truth. Two components collide when they write the same asset
+    path, and nothing else about them decides it.
+    """
+
+    stem: str
+    folder: str = ""
+    names: list[str] = field(default_factory=list)
+    assets: list[str] = field(default_factory=list)
+    enabled: bool = True
+    inspected: bool = False
+
+    @property
+    def label(self) -> str:
+        """What to call this component in a list the user reads."""
+        return f"{self.folder}/{self.stem}" if self.folder else self.stem
+
+    @property
+    def sources(self) -> list[str]:
+        """Store-relative paths of the real files."""
+        return [f"{self.folder}/{name}" if self.folder else name for name in self.names]
+
+    @property
+    def is_readable(self) -> bool:
+        """True when the container listed its assets.
+
+        An unreadable component still installs. It only loses asset-level
+        conflict checking, so the tool falls back to the folder hint and says
+        that it is guessing.
+        """
+        return bool(self.assets)
+
+    def to_json(self) -> dict:
+        return {
+            "stem": self.stem,
+            "folder": self.folder,
+            "names": self.names,
+            "assets": self.assets,
+            "enabled": self.enabled,
+            "inspected": self.inspected,
+        }
+
+    @classmethod
+    def from_json(cls, data: dict) -> Component:
+        return cls(
+            stem=data["stem"],
+            folder=data.get("folder", ""),
+            names=list(data.get("names", [])),
+            assets=list(data.get("assets", [])),
+            enabled=bool(data.get("enabled", True)),
+            inspected=bool(data.get("inspected")),
+        )
+
+
+@dataclass(slots=True)
 class Mod:
     slug: str
     hero: str
@@ -81,7 +154,7 @@ class Mod:
     nexus_id: str | None
     source: Path
     size: int
-    files: list[str] = field(default_factory=list)
+    components: list[Component] = field(default_factory=list)
     state: State = State.AVAILABLE
     has_load_order: bool = True
     note: str = ""
@@ -120,19 +193,45 @@ class Mod:
         return f"{mb:,.0f} MB" if mb >= 1 else f"{self.size / 1024:,.0f} KB"
 
     @property
+    def active(self) -> list[Component]:
+        """The components the user chose to run."""
+        return [component for component in self.components if component.enabled]
+
+    @property
+    def files(self) -> list[str]:
+        """The names this mod claims in the game folder.
+
+        Only the enabled components appear. A disabled component keeps its files
+        in the store and takes no name, which is what lets ten body options live
+        in one store directory while one of them is linked.
+        """
+        return sorted(name for item in self.active for name in item.names)
+
+    @property
+    def all_files(self) -> list[str]:
+        """Every file the archive holds, enabled or not."""
+        return sorted(name for item in self.components for name in item.names)
+
+    @property
+    def has_choices(self) -> bool:
+        return len(self.components) > 1
+
+    @property
     def files_label(self) -> str:
-        """A compact description of the mod files.
+        """A compact description of what is installed.
 
         The three Unreal files share one stem, so the stem is printed once with
-        the suffixes collected in braces.
+        the suffixes collected in braces. A mod with several components reports
+        how many of them run instead, because listing sixty file names tells the
+        reader nothing they can act on.
         """
-        if not self.files:
+        if not self.components:
             return "(not inspected)"
-        stems = {Path(name).stem for name in self.files}
-        if len(stems) == 1:
-            suffixes = ",".join(sorted(Path(n).suffix.lstrip(".") for n in self.files))
-            return f"{stems.pop()}.{{{suffixes}}}"
-        return ", ".join(self.files)
+        if self.has_choices:
+            return f"{len(self.active)} of {len(self.components)} parts"
+        names = self.components[0].names
+        suffixes = ",".join(sorted(Path(n).suffix.lstrip(".") for n in names))
+        return f"{self.components[0].stem}.{{{suffixes}}}"
 
     @property
     def is_present(self) -> bool:
@@ -153,7 +252,7 @@ class Mod:
             "nexus_id": self.nexus_id,
             "source": str(self.source),
             "size": self.size,
-            "files": self.files,
+            "components": [item.to_json() for item in self.components],
             "state": str(self.state),
             "has_load_order": self.has_load_order,
             "note": self.note,
@@ -174,7 +273,7 @@ class Mod:
             nexus_id=data.get("nexus_id"),
             source=Path(data["source"]),
             size=data.get("size", 0),
-            files=list(data.get("files", [])),
+            components=_components_from_json(data),
             state=State(data.get("state", "available")),
             has_load_order=data.get("has_load_order", True),
             note=data.get("note", ""),
@@ -184,3 +283,23 @@ class Mod:
             custom_variant=data.get("custom_variant", ""),
             variant_note=data.get("variant_note", ""),
         )
+
+
+def _components_from_json(data: dict) -> list[Component]:
+    """Read components, rebuilding them from a catalog written before they existed.
+
+    A version 2 record held one flat list of file names and linked all of them.
+    Grouping that list by stem recovers the components, and every one is marked
+    enabled because that is what the old code did on disk. The next scan reads
+    the containers and works out which of them actually belong together.
+    """
+    if "components" in data:
+        return [Component.from_json(item) for item in data["components"]]
+
+    grouped: dict[str, list[str]] = {}
+    for name in data.get("files", []):
+        grouped.setdefault(Path(name).stem, []).append(name)
+    return [
+        Component(stem=stem, names=sorted(names))
+        for stem, names in sorted(grouped.items())
+    ]
