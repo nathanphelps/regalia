@@ -257,10 +257,10 @@ class VariantStudioDialog(QDialog):
         super().__init__(parent)
         self.context = context
         self.siblings = siblings
-        self.setWindowTitle("Variant studio")
+        self.setWindowTitle("Files from this mod page")
         self.resize(900, 590)
         layout = QVBoxLayout(self)
-        title = QLabel("VARIANT STUDIO")
+        title = QLabel("FILES FROM THIS MOD PAGE")
         title.setObjectName("pageTitle")
         layout.addWidget(title)
         nexus_name = next(
@@ -271,14 +271,19 @@ class VariantStudioDialog(QDialog):
             ),
             siblings[0].hero,
         )
+        # "One active at a time" used to be printed here and it was not true.
+        # Two files from one mod page that dress different costumes both run.
+        # Only the ones writing the same asset displace each other.
         intro = QLabel(
-            f"{nexus_name} · {len(siblings)} local choices · one active at a time"
+            f"{nexus_name} · {len(siblings)} file(s) from this mod page. "
+            "Making one active switches off only the files it would overwrite."
         )
+        intro.setWordWrap(True)
         intro.setObjectName("eyebrow")
         layout.addWidget(intro)
         self.table = QTableWidget(0, 6)
         self.table.setHorizontalHeaderLabels(
-            ("Variant", "Version", "State", "Archive", "Size", "Identity")
+            ("File", "Version", "State", "Archive", "Size", "Identity")
         )
         self.table.horizontalHeader().setSectionResizeMode(
             3, QHeaderView.ResizeMode.Stretch
@@ -425,7 +430,7 @@ class LibraryPage(QWidget):
         self.issue_filter.addItem("Unverified", "unverified")
         self.issue_filter.addItem("Held", "held")
         self.issue_filter.addItem("Active", "active")
-        self.grouped = QCheckBox("Group variants")
+        self.grouped = QCheckBox("Group files by mod page")
         self.grouped.setChecked(True)
         rescan = QPushButton("Rescan")
         identify = QPushButton("Identify with Nexus")
@@ -510,14 +515,17 @@ class LibraryPage(QWidget):
         self.parts_list.itemChanged.connect(self._part_toggled)
         detail_layout.addWidget(self.parts_list)
 
-        detail_layout.addWidget(section_title("Variants and versions"))
+        # Named for what it holds. "Variants" was doing two jobs — the parts
+        # inside one archive, and the separate files a mod page offers — and the
+        # two sections sat next to each other under one word.
+        detail_layout.addWidget(section_title("Other files from this mod page"))
         self.variant_list = QListWidget()
         self.variant_list.setMaximumHeight(190)
         detail_layout.addWidget(self.variant_list)
-        activate_variant = QPushButton("Activate selected variant")
+        activate_variant = QPushButton("Make the selected file active")
         activate_variant.clicked.connect(self.activate_variant)
         detail_layout.addWidget(activate_variant)
-        manage_variants = QPushButton("Open variant studio…")
+        manage_variants = QPushButton("Rename and annotate files…")
         manage_variants.clicked.connect(self.open_variant_studio)
         detail_layout.addWidget(manage_variants)
         actions = QGridLayout()
@@ -665,7 +673,7 @@ class LibraryPage(QWidget):
         self.refresh_detail()
         active_filters = sum(bool(value) for value in (query, hero, issue))
         active_filters += state_text != "All states"
-        mode = "variant groups" if self.grouped.isChecked() else "archives"
+        mode = "mod pages" if self.grouped.isChecked() else "archives"
         self.result_summary.setText(
             f"{len(rows):,} {mode} · {len(mods):,} matching archives"
             + (f" · {active_filters} active filters" if active_filters else "")
