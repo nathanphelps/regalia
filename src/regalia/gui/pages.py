@@ -777,6 +777,7 @@ class LibraryPage(QWidget):
         def work(progress):
             progress(10, wanted.name)
             outcome = profiles.apply(wanted, self.context.catalog.mods, game.mods)
+            self.context.catalog.verify(game.mods)
             self.context.catalog.save()
             return outcome
 
@@ -991,6 +992,13 @@ class LibraryPage(QWidget):
             for index, mod in enumerate(mods, 1):
                 progress(int((index - 1) / len(mods) * 100), mod.title)
                 function(mod, game)
+            # Reconcile before saving. Installing sets the state at the moment
+            # the links are made, and a later mod in the same batch can take a
+            # name the earlier one had — two archives shipping a container with
+            # the same stem is common enough to see in any real library. Without
+            # this the loser stays recorded as installed, and Repair leaves it
+            # alone because nothing looks wrong. The terminal already did it.
+            self.context.catalog.verify(game.mods)
             self.context.catalog.save()
             return len(mods)
 

@@ -771,6 +771,7 @@ class RegaliaApp(App[None]):
         if wanted is None or self.game is None:
             return
         result = profiles.apply(wanted, self.catalog.mods, self.game.mods)
+        self.catalog.verify(self.game.mods)
         self.catalog.save()
         for line in result.problems:
             self.log_line(f"[red]profile[/] {line}")
