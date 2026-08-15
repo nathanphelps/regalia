@@ -7,10 +7,11 @@ adds a hero every season and an unknown hero loses its conflict warnings.
 
 from __future__ import annotations
 
+import json
 import tomllib
 from pathlib import Path
 
-from .paths import CONFIG_DIR
+from .paths import CONFIG_DIR, DATA_DIR
 
 # Canonical name -> extra spellings seen in the wild. Mod authors drop spaces,
 # abbreviate, and use MCU names, so one hero needs several aliases.
@@ -208,3 +209,72 @@ def find_hero(text: str) -> tuple[str, str] | None:
         if alias_key and alias_key in haystack:
             return canonical, alias_key
     return None
+
+
+# -- character ids, learned from the library -----------------------------
+#
+# A container states which character it changes: the asset paths carry a
+# four-digit id. Nothing ships that maps those ids to names, and a shipped table
+# would go stale every season, so the tool works it out from mods it has already
+# named and remembers the answer. A file whose name says nothing then still
+# reports the right hero, because the pak inside it does.
+
+UNKNOWN = "Unknown"
+
+CHARACTERS_FILE = DATA_DIR / "characters.json"
+
+_learned: dict[str, str] | None = None
+
+
+def learned_characters() -> dict[str, str]:
+    """The character id to hero name map worked out so far."""
+    global _learned
+    if _learned is None:
+        try:
+            _learned = {
+                str(key): str(value)
+                for key, value in json.loads(CHARACTERS_FILE.read_text()).items()
+            }
+        except (OSError, ValueError, AttributeError):
+            _learned = {}
+    return dict(_learned)
+
+
+def learn_characters(pairs: dict[str, str]) -> int:
+    """Record character ids seen alongside a known hero. Returns what is new.
+
+    An id already known is left alone. The first confident answer wins, because
+    a later disagreement is far more likely to be a mis-parsed file name than a
+    character changing identity.
+    """
+    global _learned
+    known = learned_characters()
+    fresh = {
+        character: hero
+        for character, hero in pairs.items()
+        if character not in known and hero and hero != UNKNOWN
+    }
+    if not fresh:
+        return 0
+
+    known.update(fresh)
+    _learned = known
+    try:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        CHARACTERS_FILE.write_text(json.dumps(known, indent=2, sort_keys=True) + "\n")
+    except OSError:
+        # Losing the file costs a re-learn on the next scan, which is cheap.
+        # Failing the scan over it is not.
+        pass
+    return len(fresh)
+
+
+def hero_for_character(character: str) -> str:
+    """The hero a character id belongs to, or "Unknown"."""
+    return learned_characters().get(character, UNKNOWN)
+
+
+def forget_characters() -> None:
+    """Drop the cache so the next read comes from disk. Used by the tests."""
+    global _learned
+    _learned = None

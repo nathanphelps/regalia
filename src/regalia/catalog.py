@@ -6,7 +6,7 @@ import hashlib
 import json
 from pathlib import Path
 
-from . import archive, components, library, naming
+from . import archive, components, heroes, iostore, library, naming
 from .model import Component, Mod, NexusInfo, State
 from .paths import CATALOG_FILE, DATA_DIR, STORE_DIR
 
@@ -119,6 +119,8 @@ class Catalog:
             found.append(mod)
 
         found += self._keep_orphans(previous, {mod.source for mod in found}, log)
+        if named := self._name_from_containers(found):
+            log.append(f"named {named} mod(s) from the character in their pak")
         self.mods = sorted(found, key=lambda m: (m.hero, m.variant))
         log += self.verify(mods_dir)
         return log
@@ -145,6 +147,48 @@ class Catalog:
         if kept:
             log.append(f"{len(kept)} installed mod(s) kept though the archive is gone")
         return kept
+
+    @staticmethod
+    def _name_from_containers(mods: list[Mod]) -> int:
+        """Give a hero to mods whose file name never said which one.
+
+        The pak knows. Its asset paths carry the character id, and a mod that
+        was named some other way teaches the tool which hero that id belongs to.
+        Mod authors name files freely — "PANTS-4245-1-0.7z" says nothing — so a
+        third of a real library can arrive as "Unknown", and an unknown hero
+        loses its grouping and its warnings.
+
+        Only an unambiguous answer is used. A pak touching two characters says
+        nothing about which one the mod is *for*.
+        """
+        learned: dict[str, str] = {}
+        for mod in mods:
+            if mod.hero == heroes.UNKNOWN:
+                continue
+            for character in _characters_of(mod):
+                learned.setdefault(character, mod.hero)
+        heroes.learn_characters(learned)
+
+        named = 0
+        for mod in mods:
+            if mod.hero != heroes.UNKNOWN:
+                continue
+            characters = _characters_of(mod)
+            if len(characters) != 1:
+                continue
+            character = next(iter(characters))
+            hero = heroes.hero_for_character(character)
+            if hero != heroes.UNKNOWN:
+                mod.hero = hero
+                named += 1
+                continue
+            # The table does not know this character yet — the game adds one
+            # every season. Naming it by its id still beats "Unknown": mods for
+            # one character group together and warn about each other, and the
+            # id is what the user needs to add a name in heroes.toml.
+            mod.hero = f"Character {character}"
+            mod.note = mod.note or f"unnamed character {character}"
+        return named
 
     @staticmethod
     def _adopt(mod: Mod, found: list[Component]) -> str:
@@ -365,3 +409,14 @@ class Catalog:
     @property
     def installed_count(self) -> int:
         return sum(1 for mod in self.mods if mod.state is State.INSTALLED)
+
+
+def _characters_of(mod: Mod) -> set[str]:
+    """Every character id the mod's containers write to."""
+    found: set[str] = set()
+    for component in mod.components:
+        for asset in component.assets:
+            for match in iostore.CHARACTER_SKIN.finditer(asset):
+                if match.group(1) == match.group(2):
+                    found.add(match.group(1))
+    return found

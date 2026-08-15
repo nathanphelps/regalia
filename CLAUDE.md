@@ -15,6 +15,7 @@ uv run regalia doctor            # every environment check, with the fix for eac
 uv run regalia status            # the current state, one line per fact
 uv run regalia import ~/Downloads   # bring existing archives into the library
 uv run regalia reset             # list what a reset would remove; --yes does it
+uv run regalia profile list      # named sets of mods; save/apply/delete take a name
 
 # Always `python -m pytest`. A stray pytest on the PATH otherwise wins, and it
 # runs against the wrong interpreter.
@@ -75,6 +76,17 @@ never because they touch the same hero: a hero has many costumes, and forty mods
 covering forty costumes is a healthy library that a hero-level check would
 condemn wholesale.
 
+### Profiles
+
+`profiles` records a deployment: which mods ran, and which components of each.
+The second half is the point. A profile that remembered only "this mod was
+installed" would lose the body size chosen out of a twenty-four part archive.
+
+Applying one is a diff against what is running, not a teardown: a mod in both
+sets keeps its links, and a mod the profile drops is unlinked but keeps its
+extracted files. Switching between two profiles that share a hundred mods costs
+almost nothing.
+
 ### The library, and why it is not the downloads folder
 
 `library` owns `~/.local/share/regalia/library`. Downloads land there and it is
@@ -103,6 +115,7 @@ the whole design exists for.
 | `~/.config/regalia/credentials.toml` | the Nexus API key, mode 0600 |
 | `~/.local/share/regalia/catalog.json` | every known mod, its state, and the MD5 cache |
 | `~/.local/share/regalia/library/` | the archives the tool owns; downloads land here |
+| `~/.local/share/regalia/profiles.json` | the saved sets of mods |
 | `~/.local/share/regalia/store/` | the extracted mod files, in the archive's own folder tree |
 | `~/.cache/regalia/images/` | Nexus artwork; a cleaner may delete it |
 
@@ -129,6 +142,14 @@ application shows it on a first run. A `Check` is `essential` when the tool
 cannot install a mod without it. `Report.needs_setup` opens the setup flow only
 when a first run finds an essential check unsettled, so a machine where detection
 already found everything sees no introduction.
+
+### Removing things
+
+`maintenance` owns removal. Every scope lists what it would remove before it
+removes it, and a link counts as the tool's own only when it points into the
+store — the catalog can be lost, and a reset has to work afterwards. The library
+is never part of a sweep the user did not name, because re-downloading a
+collection is the one cost that cannot be undone cheaply.
 
 ### The host, in one module
 
