@@ -149,6 +149,46 @@ def test_unlinking_removes_names_left_by_an_earlier_choice(tmp_path, monkeypatch
     assert list(mods_dir.iterdir()) == []
 
 
+def test_sibling_folders_under_one_parent_read_as_alternatives():
+    # A size ladder is "Default/L", "Default/M". Before extraction nothing can
+    # be read, and comparing the folders whole would call these unrelated and
+    # install both.
+    left = part("L", folder="Mod/Default/L", assets=[])
+    right = part("M", folder="Mod/Default/M", assets=[])
+
+    assert components.overlap(left, right)
+
+
+def test_a_guess_made_before_extraction_is_narrowed_once_assets_are_readable():
+    # This is the shape the real bug took: the listing from the archive has no
+    # assets, the folder guess switched every part on, and the carried-over
+    # selection was then trusted rather than re-checked.
+    listed = [part(name, folder=f"Mod/{name}", assets=[]) for name in ("L", "M", "XL")]
+    for item in listed:
+        item.enabled = True
+
+    extracted = [part(name, folder=f"Mod/{name}") for name in ("L", "M", "XL")]
+    extracted.append(part("physics", folder="Mod/_Physics", assets=[PHYSICS]))
+    for item in extracted:
+        item.enabled = True
+
+    installer._carry_choices(listed, extracted)
+
+    enabled = sorted(item.stem for item in extracted if item.enabled)
+    assert enabled == ["L", "physics"]
+
+
+def test_resolve_reports_what_it_switched_off():
+    parts = [part("M"), part("L"), part("physics", assets=[PHYSICS])]
+    for item in parts:
+        item.enabled = True
+
+    dropped = components.resolve(parts)
+
+    assert [item.stem for item in dropped] == ["L"]
+    assert sorted(item.stem for item in parts if item.enabled) == ["M", "physics"]
+
+
 def test_a_selection_survives_a_re_extract():
     previous = [part("M"), part("L")]
     previous[1].enabled = True

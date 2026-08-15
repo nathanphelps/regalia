@@ -98,9 +98,22 @@ def overlap(one: Component, other: Component) -> set[str]:
         return set()
     if one.is_readable and other.is_readable:
         return set(one.assets) & set(other.assets)
+
+    # Neither container could be read, so fall back to where they sat. Sharing a
+    # folder means alternatives; so does sitting in sibling folders under one
+    # parent, which is the shape a size ladder takes — "Default/L", "Default/M".
+    # Comparing the folders whole would call those two unrelated and install
+    # both, which is the failure this module exists to prevent.
     if one.folder and one.folder == other.folder:
         return {f"folder:{one.folder}"}
+    if _parent(one.folder) and _parent(one.folder) == _parent(other.folder):
+        return {f"folder:{_parent(one.folder)}"}
     return set()
+
+
+def _parent(folder: str) -> str:
+    head, _, _tail = folder.rpartition("/")
+    return head
 
 
 def is_certain(one: Component, other: Component) -> bool:
@@ -151,6 +164,30 @@ def enable(component: Component, components: list[Component]) -> list[Component]
         other.enabled = False
     component.enabled = True
     return displaced
+
+
+def resolve(components: list[Component]) -> list[Component]:
+    """Switch off enabled components that overwrite an earlier enabled one.
+
+    Every path that inherits a selection has to run this. A selection made
+    before the containers were readable is a guess from folder names, and a
+    selection carried over from a catalog that predates components says
+    everything is on. Either can name two components that write one asset, and
+    only the assets can settle it.
+
+    Returns what was switched off, so the caller can say so.
+    """
+    kept: list[Component] = []
+    dropped: list[Component] = []
+    for component in components:
+        if not component.enabled:
+            continue
+        if clashes(component, kept):
+            component.enabled = False
+            dropped.append(component)
+        else:
+            kept.append(component)
+    return dropped
 
 
 def choose_default(components: list[Component]) -> None:

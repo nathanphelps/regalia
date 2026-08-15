@@ -80,6 +80,12 @@ def _carry_choices(previous: list[Component], found: list[Component]) -> None:
         # user made last time.
         item.enabled = not components.clashes(item, known)
 
+    # The selection being carried in was made before this archive was
+    # extracted, so it came from folder names rather than from the containers.
+    # Now that the assets are readable it has to be narrowed, or a twelve-part
+    # archive installs all twelve.
+    components.resolve(found)
+
 
 def link(mod: Mod, mods_dir: Path, overwrite: bool = False) -> None:
     """Point the game at the store copy of each enabled component."""

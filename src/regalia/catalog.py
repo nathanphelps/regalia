@@ -166,20 +166,10 @@ class Catalog:
             mod.components = found
             return ""
 
-        dropped = 0
-        kept: list[Component] = []
-        for item in found:
-            if not item.enabled:
-                continue
-            if components.clashes(item, kept):
-                item.enabled = False
-                dropped += 1
-            else:
-                kept.append(item)
-
+        dropped = components.resolve(found)
         mod.components = found
         if dropped:
-            return f"turned off {dropped} option(s) that overwrote the one kept"
+            return f"turned off {len(dropped)} option(s) that overwrote the one kept"
         return ""
 
     @staticmethod
