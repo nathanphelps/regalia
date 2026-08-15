@@ -109,9 +109,10 @@ options to the config file.
 
 ## First run
 
-Regalia opens a **Setup** page when it cannot work yet. It asks for the two
-things it cannot guess — where the game is, and your Nexus key — and then lists
-every check with the fix beside it.
+Regalia opens **Settings** when it cannot work yet. It leads with whatever is
+not ready and the button that fixes it, then the two things it cannot guess —
+where the game is, and your Nexus key. There is no separate Setup screen: one
+place owns every value, so there is never a question of which screen to use.
 
 Downloads land in a library Regalia owns, at
 `~/.local/share/regalia/library`. If you already have a folder of archives,

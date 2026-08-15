@@ -62,8 +62,9 @@ from ..model import Mod, State
 from ..nexus import NexusClient, NexusFile, NexusImage, NexusMod, Page
 from ..nexus import collections as collection_ops
 from ..nexus.download import download_file
-from ..paths import DATA_DIR, LIBRARY_DIR, GamePaths
+from ..paths import DATA_DIR, LIBRARY_DIR, GameNotFound, GamePaths, discover_game
 from .images import ImageCache
+from .setup import ReadinessPanel
 from .state import GuiState
 from .tasks import TaskCoordinator
 from .widgets import (
@@ -2207,6 +2208,15 @@ class ActivityPage(QWidget):
 
 
 class SettingsPage(QWidget):
+    """Everything that can be changed, and everything that is not yet right.
+
+    One screen rather than two. Setup and Settings both owned the game folder,
+    the Nexus key and the browser handler, named them differently, and disagreed
+    about which was the place to change them.
+    """
+
+    open_patch = Signal()
+
     def __init__(self, context: Context) -> None:
         super().__init__()
         self.context = context
@@ -2214,6 +2224,15 @@ class SettingsPage(QWidget):
         title = QLabel("SETTINGS")
         title.setObjectName("pageTitle")
         layout.addWidget(title)
+
+        # What is wrong comes first, with the button that fixes it. This used to
+        # be a page of its own called Setup, which asked for the game folder and
+        # the Nexus key under different names from the ones here — two screens
+        # for one job, and no way to tell which owned the answer.
+        self.readiness = ReadinessPanel(self.context)
+        self.readiness.open_patch.connect(self.open_patch.emit)
+        layout.addWidget(self.readiness)
+
         form = QFormLayout()
         self.key = QLineEdit()
         self.key.setEchoMode(QLineEdit.EchoMode.Password)
@@ -2221,10 +2240,13 @@ class SettingsPage(QWidget):
         self.game_root = QLineEdit(
             str(context.config.game_root or (context.game.root if context.game else ""))
         )
+        game_detect = QPushButton("Detect")
+        game_detect.clicked.connect(self.detect_game)
         game_pick = QPushButton("Browse…")
         game_pick.clicked.connect(self.pick_game)
         game_row = QHBoxLayout()
         game_row.addWidget(self.game_root, 1)
+        game_row.addWidget(game_detect)
         game_row.addWidget(game_pick)
         game_box = QWidget()
         game_box.setLayout(game_row)
@@ -2323,11 +2345,11 @@ class SettingsPage(QWidget):
         self.handler.setWordWrap(True)
         layout.addWidget(self.handler)
         handlers = QHBoxLayout()
-        register = QPushButton("Register nxm:// handler")
-        unregister = QPushButton("Unregister")
-        register.clicked.connect(self.register_nxm)
+        # Registering lives in the panel at the top, and only while it is still
+        # to be done. Two buttons a screen apart, both called something close to
+        # "register the handler", is the confusion this screen was merged to end.
+        unregister = QPushButton("Hand nxm:// back to the previous program")
         unregister.clicked.connect(self.unregister_nxm)
-        handlers.addWidget(register)
         handlers.addWidget(unregister)
         handlers.addStretch()
         layout.addLayout(handlers)
@@ -2387,6 +2409,20 @@ class SettingsPage(QWidget):
         self._cache_disk = (0, 0)
         self.refresh_cache()
         self.context.notify(f"Cleared {count:,} cached images · {human_size(size)}")
+
+    def detect_game(self) -> None:
+        """Ask Steam where the game is, rather than making the user find it."""
+        from ..environment import steam_installs
+
+        try:
+            found = discover_game(
+                None, steam_installs(self.context.config.steam_root, refresh=True)
+            )
+        except GameNotFound as error:
+            self.context.notify(str(error), True)
+            return
+        self.game_root.setText(str(found.root))
+        self.context.notify(f"Found the game at {found.root}")
 
     def import_archives(self) -> None:
         """Bring archives from anywhere into the library the tool manages."""
@@ -2487,15 +2523,6 @@ class SettingsPage(QWidget):
         self.context.refresh_all()
         self.context.notify("Settings saved · restart only if the game path changed")
 
-    def register_nxm(self) -> None:
-        try:
-            result = nxm.register()
-        except Exception as error:  # noqa: BLE001 - desktop integration varies by host
-            self.context.notify(str(error), True)
-        else:
-            self.context.notify(" · ".join(result))
-            self.refresh_handler()
-
     def unregister_nxm(self) -> None:
         try:
             result = nxm.unregister()
@@ -2504,6 +2531,8 @@ class SettingsPage(QWidget):
         else:
             self.context.notify(" · ".join(result))
             self.refresh_handler()
+            # The panel above offers to register again, so it has to be told.
+            self.readiness.refresh()
 
     def refresh_handler(self) -> None:
         handler = nxm.registered_handler()

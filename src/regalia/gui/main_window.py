@@ -38,7 +38,6 @@ from .pages import (
     PatchPage,
     SettingsPage,
 )
-from .setup import SetupPage
 from .state import GuiState
 from .tasks import TaskCoordinator
 
@@ -87,7 +86,7 @@ class CommandPalette(QDialog):
 
 
 def _needs_setup(config: Config) -> bool:
-    """True when the first screen should be Setup rather than the dashboard."""
+    """True when the first screen should be Settings rather than the dashboard."""
     from ..readiness import run_checks
 
     return run_checks(config).needs_setup
@@ -102,9 +101,11 @@ class MainWindow(QMainWindow):
         "Patch",
         "Activity",
         "Settings",
-        "Setup",
     )
-    SETUP_ROW = 7
+    # Settings is where a first run lands. It leads with what is not ready and
+    # the button that fixes it, so there is nothing a separate Setup page did
+    # that this one does not.
+    SETUP_ROW = 6
 
     def __init__(self, config: Config) -> None:
         super().__init__()
@@ -141,7 +142,8 @@ class MainWindow(QMainWindow):
         self.refresh_all()
         if _needs_setup(config):
             # A first run, or something the tool cannot work around. Opening the
-            # dashboard would show empty tables and explain nothing.
+            # dashboard would show empty tables and explain nothing. Settings
+            # leads with what is wrong and the button that fixes it.
             self.navigation.setCurrentRow(self.SETUP_ROW)
         QTimer.singleShot(10, self._finish_migration)
         QTimer.singleShot(50, self.library.rescan)
@@ -222,7 +224,6 @@ class MainWindow(QMainWindow):
         self.patch = PatchPage(self.context)
         self.activity = ActivityPage(self.context)
         self.settings = SettingsPage(self.context)
-        self.setup = SetupPage(self.context)
         for page in (
             self.dashboard,
             self.library,
@@ -231,7 +232,6 @@ class MainWindow(QMainWindow):
             self.patch,
             self.activity,
             self.settings,
-            self.setup,
         ):
             self.stack.addWidget(page)
         workspace_layout.addWidget(self.stack, 1)
@@ -249,8 +249,7 @@ class MainWindow(QMainWindow):
         self.tasks.activity_changed.connect(self.activity_summary)
         self.dashboard.open_nexus_mod.connect(self.open_nexus_mod)
         self.library.open_nexus_mod.connect(self.open_nexus_mod)
-        self.setup.finished.connect(lambda: self.navigation.setCurrentRow(0))
-        self.setup.open_patch.connect(lambda: self.navigation.setCurrentRow(4))
+        self.settings.open_patch.connect(lambda: self.navigation.setCurrentRow(4))
 
         shortcuts = (
             ("Ctrl+1", 0),
@@ -307,7 +306,12 @@ class MainWindow(QMainWindow):
         elif index == 5:
             self.activity.refresh()
         elif index == 6:
+            # Re-run the checks on the way in. Half of what this screen reports
+            # is fixed elsewhere — the patch screen, a download, closing Steam —
+            # and a stale list is worse than none.
             self.settings.refresh_handler()
+            self.settings.readiness.refresh()
+            self.settings.refresh_library()
 
     def _refresh_history_buttons(self) -> None:
         self.back_button.setEnabled(self._history_index > 0)
