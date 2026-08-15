@@ -111,6 +111,18 @@ def fetch(
             partial.unlink(missing_ok=True)
         raise NexusOffline(f"Download failed: {error}") from error
 
+    # A dropped connection does not always raise. The server can close cleanly
+    # part way through, `read` returns nothing, and the loop ends as though the
+    # file were complete. Promoting that hands the user a truncated archive that
+    # fails to extract much later, with an error that says nothing about the
+    # download. Checked here rather than inside the loop so the scratch file is
+    # cleaned up on the way out.
+    if total and done != total:
+        partial.unlink(missing_ok=True)
+        raise NexusOffline(
+            f"Download stopped early: got {done:,} of {total:,} bytes. Try again."
+        )
+
     if target.exists():
         # Another worker finished the same archive first. Its copy is complete,
         # so this one is discarded rather than overwriting a file in use.
