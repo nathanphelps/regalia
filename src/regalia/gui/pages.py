@@ -24,7 +24,6 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
     QHeaderView,
-    QInputDialog,
     QLabel,
     QLineEdit,
     QListWidget,
@@ -52,7 +51,6 @@ from .. import (
     maintenance,
     nxm,
     patch,
-    profiles,
     steam,
     variants,
 )
@@ -450,31 +448,6 @@ class LibraryPage(QWidget):
         bar.addWidget(updates)
         layout.addLayout(bar)
 
-        # Profiles: a named deployment, switched in one step. On its own row
-        # because it acts on the whole library rather than on the selection,
-        # and putting it in the filter bar would read as another filter.
-        profile_bar = QHBoxLayout()
-        profile_bar.addWidget(QLabel("Profile"))
-        self.profile_pick = QComboBox()
-        self.profile_pick.setMinimumWidth(190)
-        apply_profile = QPushButton("Switch to it")
-        apply_profile.clicked.connect(self.apply_profile)
-        save_profile = QPushButton("Save current as…")
-        save_profile.clicked.connect(self.save_profile)
-        delete_profile = QPushButton("Delete")
-        delete_profile.clicked.connect(self.delete_profile)
-        profile_bar.addWidget(self.profile_pick)
-        profile_bar.addWidget(apply_profile)
-        profile_bar.addWidget(save_profile)
-        profile_bar.addWidget(delete_profile)
-        self.profile_note = QLabel()
-        self.profile_note.setObjectName("eyebrow")
-        profile_bar.addWidget(self.profile_note, 1)
-        layout.addLayout(profile_bar)
-
-        self.profiles = profiles.ProfileStore.load()
-        self.refresh_profiles()
-
         self.result_summary = QLabel()
         self.result_summary.setObjectName("eyebrow")
         layout.addWidget(self.result_summary)
@@ -730,84 +703,6 @@ class LibraryPage(QWidget):
             self.variant_list.addItem(item)
             if sibling is mod:
                 self.variant_list.setCurrentItem(item)
-
-    def refresh_profiles(self) -> None:
-        current = self.profile_pick.currentText()
-        self.profile_pick.clear()
-        self.profile_pick.addItems(self.profiles.names)
-        if current in self.profiles.names:
-            self.profile_pick.setCurrentText(current)
-        count = len(self.profiles.profiles)
-        self.profile_note.setText(
-            "No profiles yet — set the library up, then save it as one."
-            if not count
-            else f"{count} saved"
-        )
-
-    def save_profile(self) -> None:
-        suggestion = self.profile_pick.currentText()
-        name, agreed = QInputDialog.getText(
-            self, "Save profile", "Name for this set of mods", text=suggestion
-        )
-        if not agreed:
-            return
-        try:
-            saved = profiles.capture(name, self.context.catalog.mods)
-        except profiles.ProfileError as error:
-            self.context.notify(str(error), True)
-            return
-        replacing = self.profiles.get(saved.name) is not None
-        self.profiles.put(saved)
-        self.profiles.save()
-        self.refresh_profiles()
-        self.profile_pick.setCurrentText(saved.name)
-        what = "Replaced" if replacing else "Saved"
-        self.context.notify(f"{what} {saved.name}: {saved.size} mod(s)")
-
-    def apply_profile(self) -> None:
-        name = self.profile_pick.currentText()
-        wanted = self.profiles.get(name) if name else None
-        if wanted is None:
-            self.context.notify("Pick a profile first", True)
-            return
-        game = self.context.game
-        if game is None:
-            self.context.notify(self.context.game_error or "Game not found", True)
-            return
-
-        def work(progress):
-            progress(10, wanted.name)
-            outcome = profiles.apply(wanted, self.context.catalog.mods, game.mods)
-            self.context.catalog.verify(game.mods)
-            self.context.catalog.save()
-            return outcome
-
-        self.context.tasks.submit(
-            f"Switch to {wanted.name}",
-            work,
-            on_result=self._profile_applied,
-            on_error=lambda message, trace: self.context.notify(message, True),
-        )
-
-    def _profile_applied(self, outcome) -> None:
-        self.context.notify(outcome.summary, bool(outcome.problems))
-        for line in outcome.problems[:3]:
-            self.context.notify(line, True)
-        self.context.refresh_all()
-
-    def delete_profile(self) -> None:
-        name = self.profile_pick.currentText()
-        if not name:
-            return
-        answer = QMessageBox.question(
-            self, "Delete profile", f"Delete the profile {name}?"
-        )
-        if answer != QMessageBox.StandardButton.Yes:
-            return
-        self.profiles.remove(name)
-        self.profiles.save()
-        self.refresh_profiles()
-        self.context.notify(f"Deleted {name}")
 
     def _show_parts(self, mod: Mod | None) -> None:
         """List the archive's pak sets, grouped into the choices the author made.

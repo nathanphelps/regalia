@@ -52,6 +52,18 @@ class Profile:
     def size(self) -> int:
         return len(self.parts)
 
+    @property
+    def part_count(self) -> int:
+        return sum(len(labels) for labels in self.parts.values())
+
+    @property
+    def saved_label(self) -> str:
+        """The date it was saved, in the form a person reads."""
+        return self.saved.split("T")[0] if self.saved else "—"
+
+    def rename(self, name: str) -> None:
+        self.name = clean_name(name)
+
     def to_json(self) -> dict:
         return {"name": self.name, "parts": self.parts, "saved": self.saved}
 
@@ -105,6 +117,37 @@ def capture(name: str, mods: list[Mod]) -> Profile:
     }
     stamp = datetime.now(UTC).isoformat(timespec="seconds")
     return Profile(name=clean_name(name), parts=parts, saved=stamp)
+
+
+def preview(profile: Profile, mods: list[Mod]) -> Applied:
+    """What applying this profile would change, without changing anything.
+
+    A profile switch moves a whole library at once, and the user has no way to
+    picture that from a name and a count. Naming the mods that would go off is
+    the part worth seeing before committing: turning something on is visible in
+    game, turning something off is what surprises people.
+
+    The fields carry slugs, as `apply` returns, and nothing is touched.
+    """
+    result = Applied()
+    by_slug = {mod.slug: mod for mod in mods}
+
+    for slug in profile.parts:
+        if slug not in by_slug:
+            result.missing.append(slug)
+
+    for mod in mods:
+        wanted = profile.parts.get(mod.slug)
+        running = mod.state is State.INSTALLED
+        if wanted is None:
+            if running:
+                result.unlinked.append(mod.slug)
+            continue
+        same = running and sorted(item.label for item in mod.active) == sorted(
+            set(wanted)
+        )
+        (result.unchanged if same else result.linked).append(mod.slug)
+    return result
 
 
 def apply(profile: Profile, mods: list[Mod], mods_dir: Path) -> Applied:

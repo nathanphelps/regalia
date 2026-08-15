@@ -38,6 +38,7 @@ from .pages import (
     PatchPage,
     SettingsPage,
 )
+from .profiles_page import ProfilesPage
 from .state import GuiState
 from .tasks import TaskCoordinator
 
@@ -96,16 +97,26 @@ class MainWindow(QMainWindow):
     PAGE_NAMES = (
         "Dashboard",
         "Library",
+        "Profiles",
         "Nexus",
         "Collections",
         "Patch",
         "Activity",
         "Settings",
     )
+    # Named, because these were bare numbers and inserting a page in the middle
+    # silently sent every jump one row wrong.
+    DASHBOARD_ROW = 0
+    LIBRARY_ROW = 1
+    PROFILES_ROW = 2
+    NEXUS_ROW = 3
+    COLLECTIONS_ROW = 4
+    PATCH_ROW = 5
+    ACTIVITY_ROW = 6
     # Settings is where a first run lands. It leads with what is not ready and
     # the button that fixes it, so there is nothing a separate Setup page did
     # that this one does not.
-    SETUP_ROW = 6
+    SETUP_ROW = 7
 
     def __init__(self, config: Config) -> None:
         super().__init__()
@@ -223,10 +234,12 @@ class MainWindow(QMainWindow):
         self.collections = CollectionsPage(self.context)
         self.patch = PatchPage(self.context)
         self.activity = ActivityPage(self.context)
+        self.profiles = ProfilesPage(self.context)
         self.settings = SettingsPage(self.context)
         for page in (
             self.dashboard,
             self.library,
+            self.profiles,
             self.nexus,
             self.collections,
             self.patch,
@@ -249,7 +262,9 @@ class MainWindow(QMainWindow):
         self.tasks.activity_changed.connect(self.activity_summary)
         self.dashboard.open_nexus_mod.connect(self.open_nexus_mod)
         self.library.open_nexus_mod.connect(self.open_nexus_mod)
-        self.settings.open_patch.connect(lambda: self.navigation.setCurrentRow(4))
+        self.settings.open_patch.connect(
+            lambda: self.navigation.setCurrentRow(self.PATCH_ROW)
+        )
 
         shortcuts = (
             ("Ctrl+1", 0),
@@ -296,16 +311,18 @@ class MainWindow(QMainWindow):
                 self._history_index += 1
         self._refresh_history_buttons()
         self.stack.setCurrentIndex(index)
-        if index == 0:
+        if index == self.DASHBOARD_ROW:
             self.dashboard.refresh_local()
             self.dashboard.load_remote()
-        elif index == 3 and not self.collections.collections:
+        elif index == self.PROFILES_ROW:
+            self.profiles.refresh()
+        elif index == self.COLLECTIONS_ROW and not self.collections.collections:
             self.collections.load()
-        elif index == 4:
+        elif index == self.PATCH_ROW:
             self.patch.refresh()
-        elif index == 5:
+        elif index == self.ACTIVITY_ROW:
             self.activity.refresh()
-        elif index == 6:
+        elif index == self.SETUP_ROW:
             # Re-run the checks on the way in. Half of what this screen reports
             # is fixed elsewhere — the patch screen, a download, closing Steam —
             # and a stale list is worse than none.
@@ -353,24 +370,24 @@ class MainWindow(QMainWindow):
         CommandPalette(commands, self).exec()
 
     def _focus_nexus_search(self) -> None:
-        self.navigation.setCurrentRow(2)
+        self.navigation.setCurrentRow(self.NEXUS_ROW)
         self.nexus.search.setFocus()
 
     def _focus_library_search(self) -> None:
-        self.navigation.setCurrentRow(1)
+        self.navigation.setCurrentRow(self.LIBRARY_ROW)
         self.library.search.setFocus()
 
     def _open_favorites(self) -> None:
-        self.navigation.setCurrentRow(2)
+        self.navigation.setCurrentRow(self.NEXUS_ROW)
         self.nexus.load_favorites()
 
     def global_nexus_search(self) -> None:
         self.nexus.set_query(self.global_search.text())
-        self.navigation.setCurrentRow(2)
+        self.navigation.setCurrentRow(self.NEXUS_ROW)
         self.nexus.load(reset=True)
 
     def open_nexus_mod(self, mod_id: int) -> None:
-        self.navigation.setCurrentRow(2)
+        self.navigation.setCurrentRow(self.NEXUS_ROW)
         self.nexus.open_mod(mod_id)
 
     def notify_user(self, message: str, error: bool = False) -> None:
