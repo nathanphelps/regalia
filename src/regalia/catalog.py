@@ -6,7 +6,7 @@ import hashlib
 import json
 from pathlib import Path
 
-from . import archive, components, heroes, iostore, library, naming
+from . import archive, components, heroes, installer, iostore, library, naming
 from .model import Component, Mod, NexusInfo, State
 from .paths import CATALOG_FILE, DATA_DIR, STORE_DIR
 
@@ -261,10 +261,13 @@ class Catalog:
             # A mod with every option switched off holds no names in the game
             # folder. That is disabled, not installed, and "all of nothing is
             # true" would otherwise call it installed.
+            # By target, not by name. A name alone proves nothing: two archives
+            # can ship a container with the same stem, only one of them owns the
+            # link, and asking whether *a* link exists called both installed.
             linked = (
                 extracted
                 and bool(mod.files)
-                and all((mods_dir / name).is_symlink() for name in mod.files)
+                and set(mod.files) <= installer.linked_names(mod, mods_dir)
             )
 
             if not extracted:

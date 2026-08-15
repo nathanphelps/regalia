@@ -114,6 +114,29 @@ def link(mod: Mod, mods_dir: Path, overwrite: bool = False) -> None:
     mod.state = State.INSTALLED
 
 
+def owns(mod: Mod, target: Path) -> bool:
+    """Whether a link in the game folder points at this mod's copy of a file."""
+    if not target.is_symlink():
+        return False
+    try:
+        points_at = Path(os.readlink(target))
+    except OSError:
+        return False
+    return points_at.is_absolute() and store_dir(mod) in points_at.parents
+
+
+def linked_names(mod: Mod, mods_dir: Path) -> set[str]:
+    """The names in the game folder that this mod actually holds.
+
+    A name alone proves nothing. Two unrelated archives can ship a container
+    with the same stem — there are a dozen such pairs in a normal library — and
+    only one of them can own the name. Asking whether *a* link exists would call
+    both of them installed while only one is really deployed, and the loser
+    would never be repaired because nothing looked wrong.
+    """
+    return {name for name in mod.all_files if owns(mod, mods_dir / name)}
+
+
 def _release(mod: Mod, mods_dir: Path) -> None:
     """Drop links to this mod's own files that its current selection drops.
 
@@ -121,19 +144,12 @@ def _release(mod: Mod, mods_dir: Path) -> None:
     a container with the same stem, and removing a link because the name matches
     would quietly uninstall whichever of them linked it last.
     """
-    source_dir = store_dir(mod)
     active = {name for component in mod.active for name in component.names}
     for name in mod.all_files:
         if name in active:
             continue
         target = mods_dir / name
-        if not target.is_symlink():
-            continue
-        try:
-            points_at = Path(os.readlink(target))
-        except OSError:
-            continue
-        if points_at.is_absolute() and source_dir in points_at.parents:
+        if owns(mod, target):
             target.unlink()
 
 
@@ -143,9 +159,11 @@ def unlink(mod: Mod, mods_dir: Path) -> None:
     Every component is unlinked, not only the enabled ones, so a name left over
     from an earlier selection cannot outlive the mod that put it there.
     """
+    # Only the links this mod actually holds. A name another mod took over is
+    # that mod's to remove, and unlinking it here would uninstall it silently.
     for name in mod.all_files:
         target = mods_dir / name
-        if target.is_symlink():
+        if owns(mod, target):
             target.unlink()
     mod.state = State.DISABLED
 

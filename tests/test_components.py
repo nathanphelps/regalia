@@ -197,3 +197,58 @@ def test_a_selection_survives_a_re_extract():
     installer._carry_choices(previous, found)
 
     assert [item.stem for item in found if item.enabled] == ["L"]
+
+
+def test_a_mod_whose_name_another_took_over_is_not_called_installed(
+    tmp_path, monkeypatch
+):
+    """Two archives can ship a container with the same stem.
+
+    Only one of them owns the link. Asking whether *a* link exists at that name
+    called both installed, so the loser looked deployed while none of its files
+    were reachable — and Repair never touched it, because nothing looked wrong.
+    """
+    store = tmp_path / "store"
+    mods_dir = tmp_path / "~mods"
+    mods_dir.mkdir()
+    monkeypatch.setattr(installer, "STORE_DIR", store)
+
+    winner = make_mod([part("Shared", assets=[MESH])])
+    winner.slug = "winner"
+    loser = make_mod([part("Shared", assets=[PHYSICS])])
+    loser.slug = "loser"
+    for mod in (winner, loser):
+        (store / mod.slug).mkdir(parents=True)
+        for name in mod.components[0].names:
+            (store / mod.slug / name).write_bytes(b"")
+        mod.components[0].enabled = True
+
+    installer.link(loser, mods_dir)
+    installer.link(winner, mods_dir, overwrite=True)
+
+    assert installer.linked_names(winner, mods_dir) == set(winner.files)
+    assert installer.linked_names(loser, mods_dir) == set()
+
+
+def test_unlinking_leaves_a_name_another_mod_took_over(tmp_path, monkeypatch):
+    store = tmp_path / "store"
+    mods_dir = tmp_path / "~mods"
+    mods_dir.mkdir()
+    monkeypatch.setattr(installer, "STORE_DIR", store)
+
+    winner = make_mod([part("Shared", assets=[MESH])])
+    winner.slug = "winner"
+    loser = make_mod([part("Shared", assets=[PHYSICS])])
+    loser.slug = "loser"
+    for mod in (winner, loser):
+        (store / mod.slug).mkdir(parents=True)
+        for name in mod.components[0].names:
+            (store / mod.slug / name).write_bytes(b"")
+        mod.components[0].enabled = True
+
+    installer.link(loser, mods_dir)
+    installer.link(winner, mods_dir, overwrite=True)
+    installer.unlink(loser, mods_dir)
+
+    # The winner keeps its links: removing them would uninstall it silently.
+    assert installer.linked_names(winner, mods_dir) == set(winner.files)
