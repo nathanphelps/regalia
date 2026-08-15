@@ -167,7 +167,15 @@ def _status(config: Config) -> int:
     except GameNotFound as error:
         print(f"game        : not found — {error}")
 
-    print(f"scan folders: {', '.join(str(p) for p in config.scan_dirs)}")
+    from . import library
+    from .paths import LIBRARY_DIR
+
+    count, total = library.size()
+    print(
+        f"library     : {LIBRARY_DIR}  ({count} archive(s), {maintenance.human(total)})"
+    )
+    extra = ", ".join(str(p) for p in config.scan_dirs)
+    print(f"also watching: {extra or 'nothing'}")
     print(f"nexus key   : {credentials.mask(credentials.load_key())}")
     if warning := credentials.file_mode_warning():
         print(f"  warning   : {warning}")

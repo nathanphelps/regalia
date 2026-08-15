@@ -8,11 +8,12 @@ which for a large collection is the expensive one, so it is never included in a
 sweep that the user did not name.
 
 Nothing here touches the game's own files. The tool only ever added symlinks to
-"~mods", and only the names its catalog claims.
+"~mods", and a link counts as ours only when it points into our own store.
 """
 
 from __future__ import annotations
 
+import os
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -83,12 +84,35 @@ class Plan:
         return bool(set(self.scopes) & DESTRUCTIVE)
 
 
+def owns_link(path: Path) -> bool:
+    """Whether this symlink is one the tool made.
+
+    The target decides it. A link pointing into our own store is ours whether or
+    not the catalog still lists it, and that matters: a lost or cleared catalog
+    would otherwise leave every link in the game folder unremovable, which is
+    the one state a reset exists to get out of. `readlink` still answers for a
+    broken link, so a link whose target has been deleted is still recognised.
+
+    Anything else in "~mods" belongs to another tool or to the user, and
+    removing it would be a surprise.
+    """
+    if not path.is_symlink():
+        return False
+    try:
+        target = Path(os.readlink(path))
+    except OSError:
+        return False
+    if not target.is_absolute():
+        target = (path.parent / target).resolve(strict=False)
+    return STORE_DIR in target.parents
+
+
 def plan(scopes: list[str], mods_dir: Path | None, claimed: set[str]) -> Plan:
     """Work out what the named scopes would remove.
 
-    `claimed` is every file name the catalog knows about. Only those are
-    unlinked, so a link some other tool put in "~mods" survives — the user did
-    not ask this tool to manage it and removing it would be a surprise.
+    `claimed` is every file name the catalog knows about. A link counts as ours
+    when the catalog claims it or when it points into our store; the second test
+    is what survives a catalog that has been cleared.
     """
     unknown = [scope for scope in scopes if scope not in SCOPES]
     if unknown:
@@ -99,7 +123,7 @@ def plan(scopes: list[str], mods_dir: Path | None, claimed: set[str]) -> Plan:
 
     if "links" in ordered and mods_dir and mods_dir.is_dir():
         for path in sorted(mods_dir.iterdir()):
-            if path.is_symlink() and path.name in claimed:
+            if path.is_symlink() and (path.name in claimed or owns_link(path)):
                 found.append(Item("links", path, 0, True))
 
     if "store" in ordered:
