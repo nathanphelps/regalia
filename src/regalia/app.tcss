@@ -1,0 +1,341 @@
+/* regalia — sharp angles, heavy rules, one accent. */
+
+Screen {
+    background: $background;
+    color: $foreground;
+    layout: vertical;
+}
+
+/* ---- masthead ------------------------------------------------------ */
+
+#masthead {
+    height: 3;
+    padding: 1 2 0 2;
+    background: $panel;
+    color: $foreground;
+    layout: horizontal;
+}
+
+#wordmark {
+    width: 1fr;
+    text-style: bold;
+}
+
+#status {
+    width: auto;
+    text-align: right;
+}
+
+#rule-top {
+    height: 1;
+    background: $panel;
+    color: $primary;
+}
+
+/* ---- tabs ---------------------------------------------------------- */
+
+TabbedContent {
+    height: 1fr;
+}
+
+Tabs {
+    background: $panel;
+    height: 2;
+}
+
+Tab {
+    text-style: bold;
+    padding: 0 2;
+    color: $text-muted;
+}
+
+/* Textual paints the focused active tab with the block cursor colours, which
+   put the label on a background of its own colour. Both states are pinned here
+   so the tab reads the same whether the tab bar has focus or not. The bar under
+   the tab already marks which one is active, so no fill is needed.
+   Descendant selectors are used because Tabs nests the tab list inside a
+   scroll container, so a child chain would not match. */
+Tabs Tab.-active,
+Tabs:focus Tab.-active {
+    color: $primary !important;
+    background: transparent !important;
+    text-style: bold;
+}
+
+Underline > .underline--bar {
+    color: $primary;
+    background: $panel;
+}
+
+TabPane {
+    padding: 0 2 0 2;
+    background: $background;
+}
+
+/* ---- library ------------------------------------------------------- */
+
+#search {
+    border: none;
+    border-bottom: solid $panel;
+    background: $background;
+    color: $foreground;
+    padding: 0 0;
+    height: 2;
+    margin-bottom: 0;
+}
+
+#search:focus {
+    border-bottom: solid $primary;
+}
+
+DataTable {
+    height: 1fr;
+    background: $background;
+    border: heavy $panel;
+    scrollbar-size: 1 1;
+}
+
+DataTable > .datatable--header {
+    background: $panel;
+    color: $text-muted;
+    text-style: bold;
+}
+
+DataTable > .datatable--cursor {
+    background: $primary;
+    color: $background;
+    text-style: bold;
+}
+
+DataTable > .datatable--hover {
+    background: $boost;
+}
+
+/* ---- detail strip -------------------------------------------------- */
+
+#detail, #installed-detail {
+    height: 4;
+    padding: 1 1 0 1;
+    color: $text-muted;
+}
+
+#installed-actions {
+    height: 3;
+}
+
+/* ---- nexus and collections ---------------------------------------- */
+
+#nexus-body, NexusPane, CollectionsPane {
+    height: 1fr;
+}
+
+#nexus-search {
+    border: none;
+    border-bottom: solid $panel;
+    background: $background;
+    color: $foreground;
+    padding: 0 0;
+    height: 2;
+}
+
+#nexus-search:focus {
+    border-bottom: solid $primary;
+}
+
+#nexus-modes {
+    height: 3;
+}
+
+#collections-actions {
+    height: 3;
+}
+
+#nexus-modes Button, #collections-actions Button {
+    min-width: 16;
+}
+
+#nexus-detail, #collections-detail {
+    height: 4;
+    padding: 1 1 0 1;
+    color: $text-muted;
+}
+
+#key-input {
+    border: heavy $primary;
+    background: $surface;
+    color: $foreground;
+    margin: 1 0;
+    height: 3;
+}
+
+.row {
+    height: 3;
+}
+
+/* ---- detail screens ------------------------------------------------ */
+
+ModDetail, CollectionDetail {
+    background: $background;
+    color: $foreground;
+}
+
+#detail-page {
+    height: 1fr;
+    padding: 1 2 0 2;
+}
+
+#detail-head {
+    height: auto;
+    padding-bottom: 1;
+    border-bottom: solid $panel;
+}
+
+#detail-summary {
+    height: auto;
+    max-height: 4;
+    padding: 1 0;
+    color: $text-muted;
+}
+
+#detail-stats, #detail-counts {
+    height: 1;
+    margin-bottom: 1;
+}
+
+#detail-files, #detail-mods {
+    height: 1fr;
+    background: $background;
+    border: heavy $panel;
+    scrollbar-size: 1 1;
+}
+
+#detail-foot {
+    height: 2;
+    padding-top: 1;
+    color: $text-muted;
+}
+
+/* ---- progress ------------------------------------------------------ */
+
+#progress-row {
+    height: 1;
+    display: none;
+    layout: horizontal;
+    padding: 0 2;
+    background: $panel;
+}
+
+#progress-row.busy {
+    display: block;
+}
+
+#progress-label {
+    width: 1fr;
+    color: $primary;
+    text-style: bold;
+}
+
+ProgressBar {
+    width: 32;
+}
+
+Bar > .bar--bar {
+    color: $primary;
+}
+
+Bar > .bar--complete {
+    color: $success;
+}
+
+/* ---- patch tab ----------------------------------------------------- */
+
+#patch-body {
+    height: 1fr;
+    padding: 0 0 1 0;
+}
+
+.section-label {
+    color: $text-muted;
+    text-style: bold;
+    margin-top: 1;
+}
+
+.check-line {
+    height: 1;
+    margin-left: 1;
+}
+
+#override-box {
+    border: heavy $primary;
+    padding: 1 2;
+    margin: 1 0;
+    color: $foreground;
+    background: $surface;
+}
+
+#patch-actions {
+    height: 3;
+    margin-top: 1;
+}
+
+Button {
+    border: heavy $primary;
+    background: $background;
+    color: $foreground;
+    text-style: bold;
+    margin-right: 2;
+    min-width: 22;
+}
+
+Button:hover {
+    background: $primary;
+    color: $background;
+}
+
+Button.-danger {
+    border: heavy $error;
+}
+
+Button.-danger:hover {
+    background: $error;
+    color: $background;
+}
+
+/* ---- log ----------------------------------------------------------- */
+
+RichLog {
+    height: 1fr;
+    background: $background;
+    border: heavy $panel;
+    padding: 0 1;
+}
+
+/* ---- modal --------------------------------------------------------- */
+
+ConfirmScreen {
+    align: center middle;
+}
+
+#dialog {
+    width: 66;
+    height: auto;
+    border: heavy $primary;
+    background: $surface;
+    padding: 1 2;
+}
+
+#dialog-title {
+    text-style: bold;
+    color: $primary;
+    margin-bottom: 1;
+}
+
+#dialog-buttons {
+    height: 3;
+    margin-top: 1;
+    align-horizontal: right;
+}
+
+Footer {
+    background: $panel;
+}

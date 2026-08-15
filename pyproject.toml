@@ -1,0 +1,65 @@
+[project]
+name = "regalia"
+# One number, kept in src/regalia/__init__.py. See [tool.hatch.version].
+dynamic = ["version"]
+description = "A Marvel Rivals mod manager for Linux, desktop and terminal"
+readme = "README.md"
+requires-python = ">=3.12"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Nathan Phelps" }]
+keywords = ["marvel-rivals", "mods", "mod-manager", "nexusmods", "linux", "proton"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Environment :: X11 Applications :: Qt",
+    "Intended Audience :: End Users/Desktop",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Games/Entertainment",
+    "Topic :: Utilities",
+]
+dependencies = ["pyside6>=6.8", "py7zr>=0.21"]
+
+[project.optional-dependencies]
+tui = ["textual>=0.85"]
+
+[dependency-groups]
+dev = ["pytest>=8.0"]
+
+[project.urls]
+Homepage = "https://github.com/nathanphelps/regalia"
+Source = "https://github.com/nathanphelps/regalia"
+Issues = "https://github.com/nathanphelps/regalia/issues"
+
+[project.scripts]
+regalia = "regalia.cli:main"
+regalia-gui = "regalia.gui.application:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.version]
+# The module is the single source. The package metadata, the doctor report and
+# the Nexus user agent all read the same string this way.
+path = "src/regalia/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/regalia"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 88
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.ruff.lint.per-file-ignores]
+# The Qt stylesheets are CSS inside a string literal. The formatter cannot wrap
+# them, and splitting a rule across lines only makes it harder to read.
+"src/regalia/gui/application.py" = ["E501"]

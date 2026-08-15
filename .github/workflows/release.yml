@@ -1,0 +1,52 @@
+name: Release
+
+# A tag makes the release. Push v0.2.0 and this job builds that version,
+# proves the tag and the code agree, and publishes both files.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Build the wheel and the source archive
+        run: uv build
+
+      # The version lives in the module. A tag that disagrees with it would
+      # ship a file whose name nobody can trust, so stop here instead.
+      - name: Check the tag against the built version
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          wheel="dist/regalia-${version}-py3-none-any.whl"
+          if [ ! -f "$wheel" ]; then
+            echo "Tag ${GITHUB_REF_NAME} does not match the built version."
+            echo "Built:"
+            ls -1 dist
+            exit 1
+          fi
+
+      # Proves the file people download can install and start.
+      - name: Install the wheel and run it
+        run: |
+          uv tool install "dist/regalia-${GITHUB_REF_NAME#v}-py3-none-any.whl"
+          regalia --help > /dev/null
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes

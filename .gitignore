@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+dist/
+
+# Environments and tool caches
+.venv/
+.ruff_cache/
+.mypy_cache/
+.pytest_cache/
+
+# Agent and editor scratch
+.superpowers/
+.remember/
+.claude/
+.idea/
+.vscode/
+
+# Local output
+*.svg
+*.tmp
+
+# Never commit these
+credentials.toml
+nexus_api_key*
