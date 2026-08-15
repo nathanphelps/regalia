@@ -72,8 +72,50 @@ class GamePaths:
     def prefix(self) -> Path:
         return self.root.parent.parent / "compatdata" / APP_ID
 
+    @property
+    def config_dir(self) -> Path:
+        """Where the game keeps the settings a config mod edits.
+
+        Inside the Proton prefix rather than beside the game, because the game
+        is a Windows build and writes where a Windows build writes. Nothing in
+        the Linux tree mirrors it — the "config" folder next to the executable
+        holds the launcher's own XML and not this.
+        """
+        return (
+            self.prefix
+            / "pfx/drive_c/users/steamuser/AppData/Local/Marvel/Saved/Config/Windows"
+        )
+
+    @property
+    def engine_config(self) -> Path:
+        """The file config mods add their settings to.
+
+        It often does not exist. Unreal reads it when it is there and does
+        without it when it is not, so creating it is safe.
+        """
+        return self.config_dir / "Engine.ini"
+
     def is_valid(self) -> bool:
         return self.paks.is_dir()
+
+    @classmethod
+    def from_mods_dir(cls, mods_dir: Path) -> GamePaths | None:
+        """Work back from the "~mods" folder to the installation.
+
+        Everything that installs a mod is handed the mods folder, and a config
+        mod needs the settings file instead — which lives in the Proton prefix,
+        four levels above. Deriving it here means no call site has to learn
+        about a second path it does not otherwise use.
+
+        None when the folder is not where a "~mods" folder sits, which is the
+        case in a test with a bare temporary directory.
+        """
+        try:
+            root = mods_dir.parents[4]
+        except IndexError:
+            return None
+        candidate = cls(root)
+        return candidate if candidate.mods == mods_dir else None
 
 
 def _library_paths(install: SteamInstall) -> list[Path]:

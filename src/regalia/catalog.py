@@ -7,9 +7,19 @@ import json
 from collections import Counter
 from pathlib import Path
 
-from . import archive, components, heroes, installer, iostore, library, naming
+from . import (
+    archive,
+    components,
+    gameconfig,
+    heroes,
+    installer,
+    iostore,
+    library,
+    naming,
+)
+from .gameconfig import Setting
 from .model import Component, Mod, NexusInfo, State
-from .paths import CATALOG_FILE, DATA_DIR, STORE_DIR
+from .paths import CATALOG_FILE, DATA_DIR, STORE_DIR, GamePaths
 
 # 3 replaced the flat "files" list with components, so one archive can hold
 # several pak sets and only the chosen ones are linked.
@@ -48,7 +58,12 @@ class Catalog:
 
     # -- scanning -------------------------------------------------------
 
-    def rescan(self, scan_dirs: list[Path], mods_dir: Path) -> list[str]:
+    def rescan(
+        self,
+        scan_dirs: list[Path],
+        mods_dir: Path,
+        config_file: Path | None = None,
+    ) -> list[str]:
         """Rebuild the mod list from the scan directories.
 
         Install state is kept for mods that are already known, then checked
@@ -104,7 +119,17 @@ class Catalog:
             mod.nexus_id = parsed.nexus_id
             mod.size = sum(entry.size for entry in files)
 
-            if not listed:
+            settings = _read_settings(path, entries) if not listed else []
+            if settings:
+                # A config mod: no pak, a few lines of Unreal settings. It used
+                # to read as "unsupported: no .pak inside", which named what was
+                # absent rather than what the mod is.
+                mod.settings = settings
+                mod.components = []
+                if mod.state is State.UNSUPPORTED:
+                    mod.state = State.AVAILABLE
+                mod.note = ""
+            elif not listed:
                 mod.state = State.UNSUPPORTED
                 mod.note = "no .pak file inside"
                 log.append(f"unsupported: {path.name} — no .pak inside")
@@ -130,7 +155,7 @@ class Catalog:
         if named := self._name_from_containers(found):
             log.append(f"named {named} mod(s) from the character in their pak")
         self.mods = sorted(found, key=lambda m: (m.hero, m.variant))
-        log += self.verify(mods_dir)
+        log += self.verify(mods_dir, config_file)
         return log
 
     @staticmethod
@@ -288,7 +313,7 @@ class Catalog:
 
     # -- state checks ---------------------------------------------------
 
-    def verify(self, mods_dir: Path) -> list[str]:
+    def verify(self, mods_dir: Path, config_file: Path | None = None) -> list[str]:
         """Reconcile recorded state with what is actually on disk.
 
         A game update can delete the "~mods" folder. The store still holds the
@@ -298,6 +323,19 @@ class Catalog:
         for mod in self.mods:
             if mod.state is State.UNSUPPORTED:
                 continue
+
+            if mod.is_config:
+                # Nothing is extracted and nothing is linked. Whether it is
+                # installed is simply whether its keys are in force, which the
+                # settings file answers directly.
+                target = config_file or _config_for(mods_dir)
+                mod.state = (
+                    State.INSTALLED
+                    if target and gameconfig.is_applied(mod.settings, target)
+                    else State.AVAILABLE
+                )
+                continue
+
             store = STORE_DIR / mod.slug
             extracted = store.is_dir() and any(store.iterdir())
             # A mod with every option switched off holds no names in the game
@@ -461,6 +499,22 @@ class Catalog:
     @property
     def installed_count(self) -> int:
         return sum(1 for mod in self.mods if mod.state is State.INSTALLED)
+
+
+def _config_for(mods_dir: Path) -> Path | None:
+    game = GamePaths.from_mods_dir(mods_dir)
+    return game.engine_config if game else None
+
+
+def _read_settings(path: Path, entries: list[archive.Entry]) -> list[Setting]:
+    """Read an archive's config settings, if that is what it holds."""
+    found: list[Setting] = []
+    for entry in archive.config_files(entries):
+        try:
+            found += gameconfig.parse(archive.read_member(path, entry.name))
+        except Exception:  # noqa: BLE001 - a damaged archive is not a crash
+            continue
+    return found
 
 
 def _named_by_parser(hero: str) -> bool:

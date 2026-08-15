@@ -675,6 +675,17 @@ class LibraryPage(QWidget):
         elif nexus_mod_id:
             self._cover_timer.start()
         notes = [mod.files_label, mod.source.name]
+        if mod.is_config:
+            # It behaves differently enough to say so. There is nothing in the
+            # game folder to look at, and the change lands in a file the game
+            # rewrites, so a user checking ~mods would think it had not worked.
+            notes.insert(
+                0,
+                "This mod changes the game's settings rather than adding files. "
+                "Installing edits Engine.ini in the Proton prefix; uninstalling "
+                "puts back what was there.\n"
+                + "\n".join(item.label for item in mod.settings),
+            )
         if mod.nexus:
             notes.append(
                 f"{mod.nexus.mod_name} · {mod.nexus.author} · Nexus {mod.nexus.mod_id}"

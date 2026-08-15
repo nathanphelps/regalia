@@ -336,6 +336,15 @@ class RegaliaApp(App[None]):
             return
 
         parts: list[tuple[str, str]] = [(f"{mod.files_label}\n", "$text-muted")]
+        if mod.is_config:
+            parts.append(
+                (
+                    "changes the game's settings, not the mods folder\n",
+                    "$accent",
+                )
+            )
+            for item in mod.settings:
+                parts.append((f"  {item.label}\n", "$text-muted"))
         if mod.nexus:
             tail = f" · {', '.join(mod.collections)}" if mod.collections else ""
             parts.append(

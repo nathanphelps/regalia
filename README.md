@@ -312,6 +312,27 @@ When a container cannot be read — an encrypted one, or a format the reader doe
 not know — Regalia falls back to the folder layout, treats neighbours as
 alternatives, and marks the guess as a guess.
 
+## Mods that change settings instead of adding files
+
+Not every mod is a pak. A whole category turns something off — hero outlines,
+fog, depth of field — by adding a couple of lines to the game's `Engine.ini`.
+Those arrive as an archive with an `.ini` in it and no pak at all.
+
+Regalia installs them too. It writes only the keys the mod names, records what
+stood there first, and copies the file aside before it starts, so uninstalling
+puts your own settings back rather than deleting the line. A setting you change
+yourself afterwards is left alone when the mod is removed.
+
+The file lives inside the Proton prefix, where the Windows build writes it:
+
+```
+steamapps/compatdata/2767030/pfx/drive_c/users/steamuser/
+  AppData/Local/Marvel/Saved/Config/Windows/Engine.ini
+```
+
+There is nothing in `~mods` to look at afterwards, which is why the detail pane
+says so.
+
 ## Profiles
 
 A profile is a named set of mods, switched in one step: a light set for

@@ -313,6 +313,41 @@ def mod_files(entries: list[Entry]) -> list[Entry]:
     return [e for e in entries if not e.is_dir and e.suffix in MOD_SUFFIXES]
 
 
+CONFIG_SUFFIX = ".ini"
+
+
+def config_files(entries: list[Entry]) -> list[Entry]:
+    """The ".ini" files in an archive that carries no pak.
+
+    A config mod changes the game through its settings instead of shipping
+    files. An archive holding both a pak and an ini is a pak mod that documents
+    itself, so the ini is only meaningful when nothing else is there.
+    """
+    if mod_files(entries):
+        return []
+    return [
+        entry for entry in entries if not entry.is_dir and entry.suffix == CONFIG_SUFFIX
+    ]
+
+
+def read_member(archive: Path, name: str) -> str:
+    """Read one text file out of an archive.
+
+    Config mods are a few dozen bytes, so extracting the whole archive to read
+    them would cost more than the mod does.
+    """
+    if archive.suffix.lower() == ".zip":
+        with zipfile.ZipFile(archive) as handle:
+            return handle.read(name).decode("utf-8", "replace")
+    import py7zr
+
+    with py7zr.SevenZipFile(archive, "r") as handle:
+        found = handle.read([name]) or {}
+        for value in found.values():
+            return value.read().decode("utf-8", "replace")
+    return ""
+
+
 def looks_like_patch(entries: list[Entry]) -> bool:
     """True for the UTOC signature bypass archive.
 

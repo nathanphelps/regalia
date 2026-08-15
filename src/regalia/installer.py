@@ -16,9 +16,9 @@ import shutil
 from collections.abc import Callable
 from pathlib import Path
 
-from . import archive, components
+from . import archive, components, gameconfig
 from .model import Component, Mod, State
-from .paths import STORE_DIR
+from .paths import STORE_DIR, GamePaths
 
 Progress = Callable[[int], None]
 
@@ -114,6 +114,12 @@ def link(mod: Mod, mods_dir: Path, overwrite: bool = False) -> None:
     mod.state = State.INSTALLED
 
 
+def _config_for(mods_dir: Path) -> Path | None:
+    """The settings file belonging to the installation this folder is part of."""
+    game = GamePaths.from_mods_dir(mods_dir)
+    return game.engine_config if game else None
+
+
 def owns(mod: Mod, target: Path) -> bool:
     """Whether a link in the game folder points at this mod's copy of a file."""
     if not target.is_symlink():
@@ -153,12 +159,19 @@ def _release(mod: Mod, mods_dir: Path) -> None:
             target.unlink()
 
 
-def unlink(mod: Mod, mods_dir: Path) -> None:
+def unlink(mod: Mod, mods_dir: Path, config_file: Path | None = None) -> None:
     """Remove the game's links but keep the store copy.
 
     Every component is unlinked, not only the enabled ones, so a name left over
     from an earlier selection cannot outlive the mod that put it there.
     """
+    if mod.is_config:
+        config_file = config_file or _config_for(mods_dir)
+        if config_file is not None:
+            gameconfig.revoke(mod.settings, config_file)
+        mod.state = State.DISABLED
+        return
+
     # Only the links this mod actually holds. A name another mod took over is
     # that mod's to remove, and unlinking it here would uninstall it silently.
     for name in mod.all_files:
@@ -173,7 +186,24 @@ def install(
     mods_dir: Path,
     on_progress: Progress | None = None,
     overwrite: bool = False,
+    config_file: Path | None = None,
 ) -> None:
+    if mod.is_config:
+        # A config mod has nothing to extract and nothing to link. It writes a
+        # few keys into the game's settings instead, so it needs the path to
+        # them; without it there is nowhere to put the mod.
+        config_file = config_file or _config_for(mods_dir)
+        if config_file is None:
+            raise RuntimeError(
+                "this mod changes the game's settings, and the settings file "
+                "could not be located"
+            )
+        gameconfig.apply(mod.settings, config_file)
+        mod.state = State.INSTALLED
+        if on_progress:
+            on_progress(100)
+        return
+
     if not store_dir(mod).is_dir() or not mod.components:
         extract_to_store(mod, on_progress)
     elif on_progress:
@@ -193,9 +223,9 @@ def apply_selection(mod: Mod, mods_dir: Path) -> None:
     link(mod, mods_dir, overwrite=True)
 
 
-def remove(mod: Mod, mods_dir: Path) -> None:
+def remove(mod: Mod, mods_dir: Path, config_file: Path | None = None) -> None:
     """Remove the links and the store copy. The archive is kept."""
-    unlink(mod, mods_dir)
+    unlink(mod, mods_dir, config_file)
     shutil.rmtree(store_dir(mod), ignore_errors=True)
     mod.state = State.AVAILABLE
 

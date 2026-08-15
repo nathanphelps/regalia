@@ -87,6 +87,22 @@ sets keeps its links, and a mod the profile drops is unlinked but keeps its
 extracted files. Switching between two profiles that share a hundred mods costs
 almost nothing.
 
+### Config mods
+
+`gameconfig` handles the mods that ship an `.ini` and no pak. They change the
+game through its settings, so they install by editing
+`<prefix>/…/Saved/Config/Windows/Engine.ini` rather than by linking anything.
+
+This is the only place the tool writes into a file the game owns and rewrites,
+beside settings the user chose themselves, so: only the named keys are touched,
+the previous value of each is recorded for the undo, the file is copied aside
+first, and a value changed after installation is left alone on removal. The
+format is INI-shaped but not INI — duplicate keys are meaningful and
+`configparser` would collapse them — so it is parsed by hand.
+
+`GamePaths.from_mods_dir` exists for this. Everything that installs a mod is
+handed the mods folder, and a config mod needs the settings file instead.
+
 ### The library, and why it is not the downloads folder
 
 `library` owns `~/.local/share/regalia/library`. Downloads land there and it is

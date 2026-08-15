@@ -18,6 +18,8 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 
+from .gameconfig import Setting
+
 
 class State(StrEnum):
     AVAILABLE = "available"
@@ -155,6 +157,9 @@ class Mod:
     source: Path
     size: int
     components: list[Component] = field(default_factory=list)
+    # A config mod ships no pak. It changes the game by adding a few lines to
+    # its settings, so it has settings where other mods have components.
+    settings: list[Setting] = field(default_factory=list)
     state: State = State.AVAILABLE
     has_load_order: bool = True
     note: str = ""
@@ -193,6 +198,11 @@ class Mod:
         return f"{mb:,.0f} MB" if mb >= 1 else f"{self.size / 1024:,.0f} KB"
 
     @property
+    def is_config(self) -> bool:
+        """Whether this mod changes settings rather than shipping files."""
+        return bool(self.settings) and not self.components
+
+    @property
     def active(self) -> list[Component]:
         """The components the user chose to run."""
         return [component for component in self.components if component.enabled]
@@ -225,6 +235,9 @@ class Mod:
         how many of them run instead, because listing sixty file names tells the
         reader nothing they can act on.
         """
+        if self.is_config:
+            count = len(self.settings)
+            return f"{count} setting{'' if count == 1 else 's'}"
         if not self.components:
             return "(not inspected)"
         if self.has_choices:
@@ -253,6 +266,7 @@ class Mod:
             "source": str(self.source),
             "size": self.size,
             "components": [item.to_json() for item in self.components],
+            "settings": [item.to_json() for item in self.settings],
             "state": str(self.state),
             "has_load_order": self.has_load_order,
             "note": self.note,
@@ -274,6 +288,7 @@ class Mod:
             source=Path(data["source"]),
             size=data.get("size", 0),
             components=_components_from_json(data),
+            settings=[Setting.from_json(item) for item in data.get("settings", [])],
             state=State(data.get("state", "available")),
             has_load_order=data.get("has_load_order", True),
             note=data.get("note", ""),
