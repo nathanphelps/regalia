@@ -113,7 +113,10 @@ def _parse_slt(text: str) -> Iterator[Entry]:
         elif line.startswith("Size = ") and line[7:].strip().isdigit():
             size = int(line[7:])
         elif line.startswith("Attributes = "):
-            is_dir = "D" in line[13:].split()[0]
+            # A zip written by a DOS-era tool carries no attribute bits, so 7z
+            # prints the key and nothing else. No bits means no directory flag.
+            attributes = line[13:].split()
+            is_dir = bool(attributes) and "D" in attributes[0]
     if name is not None:
         yield Entry(name, size, is_dir)
 
