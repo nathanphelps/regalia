@@ -26,6 +26,7 @@ from .paths import (
     account_of,
     escape_vdf,
     local_config_files,
+    read_vdf,
 )
 
 BACKUP_DIR = DATA_DIR / "backups"
@@ -269,10 +270,19 @@ def backup(path: Path) -> Path:
 
 
 def _write_atomically(path: Path, text: str) -> None:
-    """Replace the file in one step so a crash cannot leave it half written."""
+    """Replace the file in one step so a crash cannot leave it half written.
+
+    Read and written with "surrogateescape", which carries any byte the file
+    holds that is not valid UTF-8 through unchanged. This file belongs to Steam
+    and can name a game or a folder in some other encoding; decoding those with
+    "replace" and writing the result back would quietly substitute the bytes and
+    corrupt a part of the file that has nothing to do with the launch options.
+    The read-back check would not notice, because it only compares the one value
+    this module set.
+    """
     mode = path.stat().st_mode & 0o777
     temporary = path.with_suffix(".vdf.regalia-new")
-    with temporary.open("w") as handle:
+    with temporary.open("w", encoding="utf-8", errors="surrogateescape") as handle:
         handle.write(text)
         handle.flush()
         os.fsync(handle.fileno())
@@ -299,7 +309,7 @@ def set_launch_options(
         raise SteamError("No Steam settings file was found")
 
     for path in files:
-        text = path.read_text(errors="replace")
+        text = read_vdf(path)
         before = _launch_options_in(text)
         if before is None:
             continue  # this account does not own the game
@@ -311,7 +321,7 @@ def set_launch_options(
         saved = backup(path)
         _write_atomically(path, _rewrite(text, value))
 
-        after = _launch_options_in(path.read_text(errors="replace"))
+        after = _launch_options_in(read_vdf(path))
         if after != value:
             shutil.copy2(saved, path)
             raise SteamError(
@@ -329,7 +339,7 @@ def read_current(
 ) -> str | None:
     """The launch options as they stand, or None when no block exists."""
     for path in local_config_files(installs):
-        current = _launch_options_in(path.read_text(errors="replace"))
+        current = _launch_options_in(read_vdf(path))
         if current is not None:
             return current
     return None
@@ -342,7 +352,7 @@ def apply_override(
 ) -> EditResult:
     """Add the DLL override the signature bypass needs, keeping what is there."""
     for path in local_config_files(installs):
-        current = _launch_options_in(path.read_text(errors="replace"))
+        current = _launch_options_in(read_vdf(path))
         if current is not None:
             return set_launch_options(merge_override(current, entry), installs, install)
     raise SteamError(f"No settings block for app {APP_ID} was found")

@@ -82,7 +82,7 @@ def _library_paths(install: SteamInstall) -> list[Path]:
     if not vdf.is_file():
         return []
 
-    text = vdf.read_text(errors="replace")
+    text = read_vdf(vdf)
     libraries: list[Path] = []
     # Each block holds one "path" line and one "apps" section. The app id only
     # appears in the block for the library that actually holds the game, so a
@@ -153,6 +153,18 @@ def local_config_files(
     return found
 
 
+def read_vdf(path: Path) -> str:
+    """Read a Steam settings file so it can be written back unchanged.
+
+    "surrogateescape" carries any byte that is not valid UTF-8 through as it is.
+    These files belong to Steam and can name a game or a folder in some other
+    encoding; decoding those with "replace" and writing the result back would
+    substitute the bytes and corrupt a part of the file that has nothing to do
+    with what this tool came to change.
+    """
+    return path.read_text(encoding="utf-8", errors="surrogateescape")
+
+
 def account_of(config: Path) -> str:
     """The Steam account id that owns a localconfig.vdf."""
     return config.parent.parent.name
@@ -168,7 +180,7 @@ def launch_options_with_source(
     user means, so the source is reported rather than guessed at silently.
     """
     for config in local_config_files(installs):
-        options = _launch_options_in(config.read_text(errors="replace"))
+        options = _launch_options_in(read_vdf(config))
         if options is not None:
             return options, config
     return None, None
