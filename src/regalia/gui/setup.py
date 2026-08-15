@@ -12,18 +12,23 @@ from `readiness`, so the window and the `doctor` command can never disagree.
 
 from __future__ import annotations
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QScrollArea,
     QVBoxLayout,
     QWidget,
 )
 
 from .. import nxm
 from ..readiness import Check, Level, run_checks
+
+# About four checks before it scrolls. Enough to see there is a problem and
+# what the first one is, without swallowing the screen.
+CHECKS_MAX_HEIGHT = 190
 
 MARK_COLOURS = {
     Level.OK: "#7bbf8f",
@@ -49,10 +54,22 @@ class ReadinessPanel(QWidget):
         self.headline.setWordWrap(True)
         layout.addWidget(self.headline)
 
+        # Bounded, and scrolling when it has more to say than fits. A first run
+        # can raise half a dozen checks; letting the panel grow to hold them all
+        # takes the room the settings below it need, which is what pushed the
+        # fields down to a sliver each.
         self.checks_host = QWidget()
         self.checks_layout = QVBoxLayout(self.checks_host)
         self.checks_layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(self.checks_host)
+        self.checks_area = QScrollArea()
+        self.checks_area.setWidgetResizable(True)
+        self.checks_area.setFrameShape(QFrame.Shape.NoFrame)
+        self.checks_area.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        self.checks_area.setMaximumHeight(CHECKS_MAX_HEIGHT)
+        self.checks_area.setWidget(self.checks_host)
+        layout.addWidget(self.checks_area)
 
         actions = QHBoxLayout()
         self.patch_button = QPushButton("Open the patch screen")

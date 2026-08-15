@@ -2207,6 +2207,33 @@ class ActivityPage(QWidget):
             )
 
 
+# Tall enough that a form row cannot squeeze a field into a sliver.
+FIELD_HEIGHT = 30
+
+
+def _scrollable(inner) -> QScrollArea:
+    """Put a layout in a panel that scrolls rather than shrinks.
+
+    Qt reduces a widget below its sizeHint before it will show a scrollbar, so a
+    tall column in a short window silently flattens every field in it. Giving
+    the content its own scroll area means the fields keep their size and the
+    panel scrolls instead.
+    """
+    host = QWidget()
+    if isinstance(inner, QWidget):
+        holder = QVBoxLayout(host)
+        holder.addWidget(inner)
+    else:
+        host.setLayout(inner)
+
+    area = QScrollArea()
+    area.setWidgetResizable(True)
+    area.setFrameShape(QFrame.Shape.NoFrame)
+    area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+    area.setWidget(host)
+    return area
+
+
 class SettingsPage(QWidget):
     """Everything that can be changed, and everything that is not yet right.
 
@@ -2233,7 +2260,6 @@ class SettingsPage(QWidget):
         self.readiness.open_patch.connect(self.open_patch.emit)
         layout.addWidget(self.readiness)
 
-        form = QFormLayout()
         self.key = QLineEdit()
         self.key.setEchoMode(QLineEdit.EchoMode.Password)
         self.key.setPlaceholderText(credentials.mask(credentials.load_key()))
@@ -2251,7 +2277,10 @@ class SettingsPage(QWidget):
         game_box = QWidget()
         game_box.setLayout(game_row)
         self.scan = QListWidget()
-        self.scan.setMaximumHeight(130)
+        # Small on purpose. This is the least used setting on the screen — most
+        # people never add one — and at its old height it was the largest thing
+        # in the tab, above the game folder everyone does need.
+        self.scan.setMaximumHeight(84)
         for path in context.config.scan_dirs:
             self.scan.addItem(str(path))
         scan_buttons = QHBoxLayout()
@@ -2261,9 +2290,16 @@ class SettingsPage(QWidget):
         remove_scan.clicked.connect(self.remove_scan)
         scan_buttons.addWidget(add_scan)
         scan_buttons.addWidget(remove_scan)
+        watch_hint = QLabel(
+            "Optional. The library is always read; add a folder here only to "
+            "watch archives you keep somewhere else."
+        )
+        watch_hint.setWordWrap(True)
+        watch_hint.setObjectName("eyebrow")
         scan_box = QWidget()
         scan_layout = QVBoxLayout(scan_box)
         scan_layout.setContentsMargins(0, 0, 0, 0)
+        scan_layout.addWidget(watch_hint)
         scan_layout.addWidget(self.scan)
         scan_layout.addLayout(scan_buttons)
         self.theme = QComboBox()
@@ -2279,10 +2315,10 @@ class SettingsPage(QWidget):
             )
         index = self.cache.findData(context.config.image_cache_mb)
         self.cache.setCurrentIndex(index if index >= 0 else 2)
-        # Grouped, and named the same as the Setup page. The two screens used
-        # different words for one thing — "Game root" against "Game folder",
-        # "Scan folders" against "Downloads folder" — which read as four
-        # settings instead of two.
+        # Grouped into tabs, and named the same words throughout. One long
+        # column squeezed every field once the readiness panel was added above
+        # it: Qt shrinks a widget below its sizeHint before it will scroll, so
+        # the boxes the user actually types in were the first thing to give.
         self.library_line = QLabel()
         self.library_line.setWordWrap(True)
         self.library_line.setObjectName("eyebrow")
@@ -2299,26 +2335,50 @@ class SettingsPage(QWidget):
         library_box = QWidget()
         library_box.setLayout(library_row)
 
-        watch_hint = QLabel(
-            "Optional. The library above is always read; add a folder here only "
-            "to watch archives you keep somewhere else."
-        )
-        watch_hint.setWordWrap(True)
-        watch_hint.setObjectName("eyebrow")
+        # Nothing here may be squeezed to nothing. A form row will happily
+        # collapse a line edit to a few pixels when the column runs out of room.
+        for field in (self.game_root, self.key, self.theme, self.density, self.cache):
+            field.setMinimumHeight(FIELD_HEIGHT)
+        self.game_root.setMinimumWidth(260)
 
-        form.addRow(section_title("Game"), QWidget())
-        form.addRow("Game folder", game_box)
-        form.addRow(section_title("Mods"), QWidget())
-        form.addRow("Mod library", library_box)
-        form.addRow("Extra folders to watch", scan_box)
-        form.addRow("", watch_hint)
-        form.addRow(section_title("Nexus"), QWidget())
-        form.addRow("API key", self.key)
-        form.addRow(section_title("Appearance"), QWidget())
-        form.addRow("Theme", self.theme)
-        form.addRow("Library density", self.density)
-        form.addRow("Image cache", self.cache)
-        layout.addLayout(form)
+        game_form = QFormLayout()
+        game_form.addRow("Game folder", game_box)
+        game_form.addRow("Mod library", library_box)
+        game_form.addRow("Extra folders to watch", scan_box)
+
+        nexus_form = QFormLayout()
+        nexus_form.addRow("API key", self.key)
+        key_hint = QLabel(
+            "Search works without a key. Downloads and collections need one: "
+            f'<a href="{credentials.API_KEY_URL}">{credentials.API_KEY_URL}</a>'
+        )
+        key_hint.setOpenExternalLinks(True)
+        key_hint.setWordWrap(True)
+        key_hint.setObjectName("eyebrow")
+        # Said here as well as in the panel above, because the panel stops
+        # saying it the moment a key is set — and that is exactly when someone
+        # comes looking for where the key came from.
+        nexus_form.addRow("", key_hint)
+
+        self.handler = QLabel()
+        self.handler.setWordWrap(True)
+        nexus_form.addRow("Browser links", self.handler)
+        # Registering lives in the panel at the top, and only while it is still
+        # to be done. Two buttons a screen apart, both called something close to
+        # "register the handler", is the confusion this screen was merged to end.
+        unregister = QPushButton("Hand nxm:// back to the previous program")
+        unregister.clicked.connect(self.unregister_nxm)
+        unregister_row = QHBoxLayout()
+        unregister_row.addWidget(unregister)
+        unregister_row.addStretch()
+        unregister_box = QWidget()
+        unregister_box.setLayout(unregister_row)
+        nexus_form.addRow("", unregister_box)
+
+        look_form = QFormLayout()
+        look_form.addRow("Theme", self.theme)
+        look_form.addRow("Library density", self.density)
+        look_form.addRow("Image cache", self.cache)
         cache_panel = QFrame()
         cache_panel.setObjectName("statCard")
         cache_layout = QHBoxLayout(cache_panel)
@@ -2331,58 +2391,68 @@ class SettingsPage(QWidget):
         cache_layout.addWidget(self.cache_status, 1)
         cache_layout.addWidget(inspect_cache)
         cache_layout.addWidget(clear_cache)
-        layout.addWidget(cache_panel)
+        look_form.addRow("", cache_panel)
 
-        # Save sits with the form it saves. Everything below it is an action
-        # that takes effect the moment it is pressed, and the destructive ones
-        # go last so nothing lands under the pointer on the way to Save.
-        save = QPushButton("Save settings")
-        save.clicked.connect(self.save)
-        layout.addWidget(save)
-
-        layout.addWidget(section_title("Nexus browser links"))
-        self.handler = QLabel()
-        self.handler.setWordWrap(True)
-        layout.addWidget(self.handler)
-        handlers = QHBoxLayout()
-        # Registering lives in the panel at the top, and only while it is still
-        # to be done. Two buttons a screen apart, both called something close to
-        # "register the handler", is the confusion this screen was merged to end.
-        unregister = QPushButton("Hand nxm:// back to the previous program")
-        unregister.clicked.connect(self.unregister_nxm)
-        handlers.addWidget(unregister)
-        handlers.addStretch()
-        layout.addLayout(handlers)
-
-        layout.addWidget(section_title("Start over"))
         reset_hint = QLabel(
             "Each of these lists exactly what it would remove before it removes "
             "anything. Your archives are never touched."
         )
         reset_hint.setWordWrap(True)
         reset_hint.setObjectName("eyebrow")
-        layout.addWidget(reset_hint)
-        resets = QHBoxLayout()
-        for label, scopes, title in (
-            ("Unlink every mod", ["links"], "Remove the game's links"),
+        resets = QVBoxLayout()
+        resets.addWidget(reset_hint)
+        # Each one says what it costs to undo. Three buttons in a row, named
+        # only by what they remove, gives no way to tell which is the cheap one.
+        for label, scopes, title, cost in (
+            (
+                "Unlink every mod",
+                ["links"],
+                "Remove the game's links",
+                "The game loads no mods. Everything is kept — switching them "
+                "back on costs nothing.",
+            ),
             (
                 "Delete extracted files",
                 ["links", "store"],
                 "Remove the links and the extracted files",
+                "Frees the most space. Reinstalling means extracting the "
+                "archives again, which you still have.",
             ),
             (
                 "Forget everything",
                 ["links", "store", "catalog", "cache"],
                 "Remove links, extracted files, the mod list and artwork",
+                "A clean slate. Your archives, your key and your settings stay.",
             ),
         ):
+            row = QHBoxLayout()
             button = QPushButton(label)
+            button.setMinimumWidth(200)
             button.clicked.connect(lambda _=False, s=scopes, t=title: self.reset(s, t))
-            resets.addWidget(button)
+            note = QLabel(cost)
+            note.setWordWrap(True)
+            note.setObjectName("eyebrow")
+            row.addWidget(button)
+            row.addWidget(note, 1)
+            holder = QWidget()
+            holder.setLayout(row)
+            resets.addWidget(holder)
         resets.addStretch()
-        layout.addLayout(resets)
 
-        layout.addStretch()
+        tabs = QTabWidget()
+        tabs.addTab(_scrollable(game_form), "Game and mods")
+        tabs.addTab(_scrollable(nexus_form), "Nexus")
+        tabs.addTab(_scrollable(look_form), "Appearance")
+        tabs.addTab(_scrollable(resets), "Start over")
+        layout.addWidget(tabs, 1)
+
+        # Save sits outside the tabs, because the values it writes are spread
+        # across them and a button that disappears when you change tab reads as
+        # a button that does not apply to the tab you are on.
+        save = QPushButton("Save settings")
+        save.clicked.connect(self.save)
+        layout.addWidget(save)
+
         self._cache_disk: tuple[int, int] | None = None
         context.images.changed.connect(self.refresh_cache)
         self.refresh_cache()
