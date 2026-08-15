@@ -2290,7 +2290,7 @@ class SettingsPage(QWidget):
 
         reset_hint = QLabel(
             "Each of these lists exactly what it would remove before it removes "
-            "anything. Your archives are never touched."
+            "anything. Only the last one touches your downloaded archives."
         )
         reset_hint.setWordWrap(True)
         reset_hint.setObjectName("eyebrow")
@@ -2318,6 +2318,13 @@ class SettingsPage(QWidget):
                 ["links", "store", "catalog", "cache"],
                 "Remove links, extracted files, the mod list and artwork",
                 "A clean slate. Your archives, your key and your settings stay.",
+            ),
+            (
+                "Delete the archives too",
+                ["links", "store", "catalog", "cache", "library"],
+                "Remove everything, including the downloaded archives",
+                "Everything above, plus the archives themselves. This is the "
+                "only one you cannot undo without downloading again.",
             ),
         ):
             row = QHBoxLayout()
@@ -2431,12 +2438,20 @@ class SettingsPage(QWidget):
             f"{scope}: {len(items)} item(s) — {maintenance.DESCRIPTIONS[scope]}"
             for scope, items in todo.by_scope().items()
         ]
+        # The library is the one scope that cannot be undone from disk, so it
+        # asks in stronger terms than the rest and never rides along with them.
+        destructive = todo.touches_destructive
         answer = QMessageBox.warning(
             self,
-            title,
+            f"{title} — this cannot be undone" if destructive else title,
             f"This removes {todo.count} item(s), {maintenance.human(todo.bytes)}:\n\n"
             + "\n".join(lines)
-            + "\n\nThis cannot be undone.",
+            + (
+                "\n\nThe archives go too. Getting them back means downloading "
+                "every one again."
+                if destructive
+                else "\n\nThe archives stay, so everything here can be rebuilt."
+            ),
             QMessageBox.StandardButton.Cancel | QMessageBox.StandardButton.Ok,
             QMessageBox.StandardButton.Cancel,
         )

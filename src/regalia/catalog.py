@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections import Counter
 from pathlib import Path
 
 from . import archive, components, heroes, installer, iostore, library, naming
@@ -168,33 +169,51 @@ class Catalog:
         Only an unambiguous answer is used. A pak touching two characters says
         nothing about which one the mod is *for*.
         """
-        learned: dict[str, str] = {}
+        # Learn by majority, not by first seen. One mis-parsed file name would
+        # otherwise teach a character the wrong hero, and because the container
+        # then overrules the file name, that one mistake would rename every
+        # other mod for the same character.
+        votes: dict[str, Counter[str]] = {}
         for mod in mods:
-            if mod.hero == heroes.UNKNOWN:
+            characters = _characters_of(mod)
+            if len(characters) != 1 or not _named_by_parser(mod.hero):
                 continue
-            for character in _characters_of(mod):
-                learned.setdefault(character, mod.hero)
-        heroes.learn_characters(learned)
+            votes.setdefault(next(iter(characters)), Counter())[mod.hero] += 1
+        heroes.learn_characters(
+            {
+                character: tally.most_common(1)[0][0]
+                for character, tally in votes.items()
+            }
+        )
 
         named = 0
         for mod in mods:
-            if mod.hero != heroes.UNKNOWN:
-                continue
             characters = _characters_of(mod)
             if len(characters) != 1:
+                # Nothing unambiguous to go on. A pak touching two characters
+                # does not say which one the mod is *for*.
                 continue
             character = next(iter(characters))
             hero = heroes.hero_for_character(character)
-            if hero != heroes.UNKNOWN:
+
+            if hero == heroes.UNKNOWN:
+                if not _named_by_parser(mod.hero):
+                    # The table has not met this character — the game adds one
+                    # every season. Its id still beats "Unknown": mods for one
+                    # character group together and warn about each other, and
+                    # the id is what goes in heroes.toml to name it.
+                    mod.hero = f"Character {character}"
+                    mod.note = mod.note or f"unnamed character {character}"
+                continue
+
+            if mod.hero != hero:
+                # The container wins. A file name is what the author felt like
+                # typing and the parser reads it hopefully — "Fishnet
+                # Stockings" and "one.7z" carry no hero at all, and a name that
+                # merely contains "cap" is not proof of Captain America. The
+                # asset path states the character as fact.
                 mod.hero = hero
                 named += 1
-                continue
-            # The table does not know this character yet — the game adds one
-            # every season. Naming it by its id still beats "Unknown": mods for
-            # one character group together and warn about each other, and the
-            # id is what the user needs to add a name in heroes.toml.
-            mod.hero = f"Character {character}"
-            mod.note = mod.note or f"unnamed character {character}"
         return named
 
     @staticmethod
@@ -419,6 +438,15 @@ class Catalog:
     @property
     def installed_count(self) -> int:
         return sum(1 for mod in self.mods if mod.state is State.INSTALLED)
+
+
+def _named_by_parser(hero: str) -> bool:
+    """Whether a hero name came from a real match rather than a fallback.
+
+    "Unknown" and "Character 1037" are both placeholders. Treating either as
+    evidence would have the tool teach itself its own guesses.
+    """
+    return hero != heroes.UNKNOWN and not hero.startswith("Character ")
 
 
 def _characters_of(mod: Mod) -> set[str]:
