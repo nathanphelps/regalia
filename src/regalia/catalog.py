@@ -59,7 +59,14 @@ class Catalog:
         found: list[Mod] = []
         self.patch_archive = None
 
-        for path in archive.find_archives(library.roots(scan_dirs)):
+        roots = library.roots(scan_dirs)
+        for path in archive.find_unsupported(roots):
+            log.append(
+                f"skipped: {path.name} — {path.suffix} archives cannot be opened; "
+                "repack it as .zip or .7z"
+            )
+
+        for path in archive.find_archives(roots):
             entries = archive.list_entries(path)
             if not entries:
                 log.append(f"unreadable: {path.name}")

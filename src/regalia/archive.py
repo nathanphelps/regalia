@@ -22,6 +22,10 @@ from pathlib import Path
 
 MOD_SUFFIXES = frozenset({".pak", ".ucas", ".utoc"})
 ARCHIVE_SUFFIXES = frozenset({".7z", ".zip"})
+# Formats a mod is sometimes packed in that neither backend can open. They are
+# named so the scan can say why a file was skipped: silence reads as the tool
+# not noticing the download, and sends the user looking in the wrong place.
+UNSUPPORTED_SUFFIXES = frozenset({".rar", ".tar", ".gz", ".bz2", ".xz"})
 
 PROGRESS = re.compile(r"(\d{1,3})%")
 ENV_BACKEND = "REGALIA_EXTRACTOR"
@@ -393,5 +397,22 @@ def find_archives(directories: list[Path]) -> list[Path]:
             continue
         for path in sorted(directory.iterdir()):
             if path.is_file() and path.suffix.lower() in ARCHIVE_SUFFIXES:
+                found.append(path)
+    return found
+
+
+def find_unsupported(directories: list[Path]) -> list[Path]:
+    """Archives in a format nothing here can open.
+
+    A ".rar" downloads like any other file and then never appears in the
+    library, which looks like the download failing rather than the format being
+    unreadable. Naming them lets the scan say so.
+    """
+    found: list[Path] = []
+    for directory in directories:
+        if not directory.is_dir():
+            continue
+        for path in sorted(directory.iterdir()):
+            if path.is_file() and path.suffix.lower() in UNSUPPORTED_SUFFIXES:
                 found.append(path)
     return found

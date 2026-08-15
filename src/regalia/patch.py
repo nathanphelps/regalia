@@ -55,12 +55,26 @@ class PatchStatus:
         return "override missing"
 
 
+def has_plugin(plugins: Path) -> bool:
+    """Whether any ASI plugin sits in the folder, whatever its case.
+
+    A glob would miss a plugin named ".ASI", which installs happily under its
+    own name and would then be reported as missing — leaving the user chasing a
+    patch that is already in place.
+    """
+    if not plugins.is_dir():
+        return False
+    return any(
+        path.is_file() and path.suffix.lower() == ".asi" for path in plugins.iterdir()
+    )
+
+
 def status(game: GamePaths) -> PatchStatus:
     plugins = game.binaries / PLUGIN_DIR
     options, source = launch_options_with_source()
     return PatchStatus(
         loader_installed=(game.binaries / LOADER_NAME).is_file(),
-        plugin_installed=plugins.is_dir() and any(plugins.glob("*.asi")),
+        plugin_installed=has_plugin(plugins),
         launch_options=options,
         steam_account=account_of(source) if source else None,
     )
@@ -84,13 +98,24 @@ def install(game: GamePaths, patch_archive: Path, staging: Path) -> list[str]:
     game.binaries.mkdir(parents=True, exist_ok=True)
     placed: list[str] = []
 
-    for dll in staging.rglob(LOADER_NAME):
-        shutil.copy2(dll, game.binaries / LOADER_NAME)
-        placed.append(LOADER_NAME)
-        break
+    # Matched without regard to case. These archives are built on Windows, where
+    # "DSOUND.dll" and "dsound.dll" are one name, and `looks_like_patch` already
+    # lowercases before deciding an archive is a patch. Matching exactly here
+    # meant an archive the tool had just called a patch could then fail to
+    # install, reporting that it held no loader.
+    found_files = [path for path in staging.rglob("*") if path.is_file()]
+
+    for dll in found_files:
+        if dll.name.lower() == LOADER_NAME:
+            # Written under the canonical name, because Wine looks that up.
+            shutil.copy2(dll, game.binaries / LOADER_NAME)
+            placed.append(LOADER_NAME)
+            break
 
     target_plugins = game.binaries / PLUGIN_DIR
-    for asi in staging.rglob("*.asi"):
+    for asi in found_files:
+        if asi.suffix.lower() != ".asi":
+            continue
         target_plugins.mkdir(parents=True, exist_ok=True)
         shutil.copy2(asi, target_plugins / asi.name)
         placed.append(f"{PLUGIN_DIR}/{asi.name}")
@@ -109,7 +134,9 @@ def uninstall(game: GamePaths) -> list[str]:
         loader.unlink()
         removed.append(LOADER_NAME)
     plugins = game.binaries / PLUGIN_DIR
-    for asi in plugins.glob("*.asi") if plugins.is_dir() else []:
-        asi.unlink()
-        removed.append(f"{PLUGIN_DIR}/{asi.name}")
+    if plugins.is_dir():
+        for asi in sorted(plugins.iterdir()):
+            if asi.is_file() and asi.suffix.lower() == ".asi":
+                asi.unlink()
+                removed.append(f"{PLUGIN_DIR}/{asi.name}")
     return removed

@@ -206,9 +206,18 @@ def _describe(shared: set[str]) -> str:
                 skins.setdefault(match.group(2) + match.group(3), None)
 
     if skins:
-        listed = ", ".join(sorted(skins)[:3])
+        # Name the hero where it is known. "costume 1053301" tells the user
+        # nothing they can act on; "Emma Frost costume 1053301" at least says
+        # what they would be looking at in game.
+        from . import heroes
+
+        named = []
+        for skin in sorted(skins)[:3]:
+            hero = heroes.hero_for_character(skin[:4])
+            named.append(f"{hero} costume {skin}" if hero != heroes.UNKNOWN else skin)
+        listed = ", ".join(named)
         extra = "" if len(skins) <= 3 else f" and {len(skins) - 3} more"
-        return f"costume {listed}{extra}"
+        return f"{listed}{extra}"
     count = len(shared)
     return f"{count} asset{'' if count == 1 else 's'}"
 
