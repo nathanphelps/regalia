@@ -14,9 +14,9 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.content import Content
 from textual.screen import Screen
-from textual.widgets import DataTable, Footer, Static
+from textual.widgets import DataTable, Footer, Input, Static
 
-from .model import Mod
+from .model import Mod, State
 from .nexus.models import Collection, NexusFile, NexusMod
 
 MOD_URL = "https://www.nexusmods.com/marvelrivals/mods/{mod_id}"
@@ -26,7 +26,7 @@ COLLECTION_URL = "https://next.nexusmods.com/marvelrivals/collections/{slug}"
 # checked before the application's, so they are claimed here and made to do
 # nothing. Without this, pressing "x" on a detail screen would remove whatever
 # the library cursor happened to be sitting on.
-SHADOWED = ("i", "e", "x", "r", "n", "u", "c", "slash", "space")
+SHADOWED = ("i", "e", "x", "r", "n", "u", "c", "p", "f", "slash", "space")
 
 
 def _shadow() -> list[Binding]:
@@ -150,6 +150,91 @@ class PartsScreen(Screen[bool]):
 
     def action_back(self) -> None:
         self.dismiss(self.changed)
+
+
+@dataclass(frozen=True, slots=True)
+class ProfileChoice:
+    kind: str  # "apply", "save", or "delete"
+    name: str
+
+
+class ProfilesScreen(Screen[ProfileChoice | None]):
+    """Pick a saved set of mods, or record the current one.
+
+    The screen only decides. The application carries the choice out, which keeps
+    the linking off the screen and lets it report into the log like every other
+    action.
+    """
+
+    BINDINGS = [
+        Binding("enter", "switch", "switch to it"),
+        Binding("s", "save", "save current"),
+        Binding("d", "delete", "delete"),
+        Binding("escape", "back", "back"),
+        *[Binding(key, "nothing", "", show=False) for key in ("i", "e", "x", "r", "n")],
+    ]
+
+    def action_nothing(self) -> None:
+        return None
+
+    def __init__(self, store, mods: list[Mod]) -> None:
+        super().__init__()
+        self.store = store
+        self.mods = mods
+
+    def compose(self) -> ComposeResult:
+        yield Static(Content.styled("PROFILES", "bold"), id="profiles-title")
+        yield Static(id="profiles-hint")
+        yield DataTable(id="profiles-table", cursor_type="row")
+        yield Input(placeholder="name for a new profile", id="profile-name")
+        yield Footer()
+
+    def on_mount(self) -> None:
+        table = self.query_one("#profiles-table", DataTable)
+        table.add_columns("profile", "mods", "saved")
+        self.refresh_rows()
+
+    def refresh_rows(self) -> None:
+        table = self.query_one("#profiles-table", DataTable)
+        table.clear()
+        for item in self.store.profiles:
+            table.add_row(
+                Content(item.name),
+                Content.styled(str(item.size), "$text-muted").right(5),
+                Content.styled(item.saved.split("T")[0] or "—", "$text-muted"),
+            )
+        running = sum(1 for mod in self.mods if mod.state is State.INSTALLED)
+        self.query_one("#profiles-hint", Static).update(
+            Content.styled(
+                f"{running} mod(s) running now. "
+                "Type a name and press S to save them as a profile.",
+                "$text-muted",
+            )
+        )
+
+    def _current(self) -> str:
+        table = self.query_one("#profiles-table", DataTable)
+        row = table.cursor_row
+        if 0 <= row < len(self.store.profiles):
+            return self.store.profiles[row].name
+        return ""
+
+    def action_switch(self) -> None:
+        if name := self._current():
+            self.dismiss(ProfileChoice("apply", name))
+
+    def action_save(self) -> None:
+        typed = self.query_one("#profile-name", Input).value.strip()
+        name = typed or self._current()
+        if name:
+            self.dismiss(ProfileChoice("save", name))
+
+    def action_delete(self) -> None:
+        if name := self._current():
+            self.dismiss(ProfileChoice("delete", name))
+
+    def action_back(self) -> None:
+        self.dismiss(None)
 
 
 @dataclass(frozen=True, slots=True)

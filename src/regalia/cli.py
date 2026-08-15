@@ -58,6 +58,14 @@ def _build_parser() -> argparse.ArgumentParser:
         help="move instead of copying, leaving the source folder empty",
     )
 
+    profile = sub.add_parser(
+        "profile", help="save, list, apply or delete a named set of mods"
+    )
+    profile.add_argument(
+        "action", choices=("list", "save", "apply", "delete"), nargs="?", default="list"
+    )
+    profile.add_argument("name", nargs="?", help="the profile to act on")
+
     resetter = sub.add_parser(
         "reset", help="remove what the tool made; lists it first and asks"
     )
@@ -198,6 +206,69 @@ def _import(paths: list[Path], move: bool, config: Config) -> int:
     return 0
 
 
+def _profile(action: str, name: str | None, config: Config) -> int:
+    """Save the current deployment under a name, or switch to a saved one."""
+    from . import profiles
+    from .catalog import Catalog
+    from .paths import GameNotFound, discover_game
+
+    store = profiles.ProfileStore.load()
+
+    if action == "list":
+        if not store.profiles:
+            print("No profiles yet. Save one with: regalia profile save <name>")
+            return 0
+        for item in store.profiles:
+            when = item.saved.split("T")[0] if item.saved else "—"
+            print(f"{item.name:<24} {item.size:>4} mod(s)   saved {when}")
+        return 0
+
+    if not name:
+        print(f"Which profile? regalia profile {action} <name>", file=sys.stderr)
+        return 2
+
+    try:
+        game = discover_game(config.game_root)
+    except GameNotFound as error:
+        print(f"Game not found — {error}", file=sys.stderr)
+        return 2
+
+    catalog = Catalog.load()
+
+    if action == "delete":
+        if not store.remove(name):
+            print(f"No profile called {name}", file=sys.stderr)
+            return 1
+        store.save()
+        print(f"Deleted {name}")
+        return 0
+
+    if action == "save":
+        catalog.rescan(config.scan_dirs, game.mods)
+        saved = profiles.capture(name, catalog.mods)
+        store.put(saved)
+        store.save()
+        print(f"Saved {saved.name}: {saved.size} mod(s)")
+        return 0
+
+    wanted = store.get(name)
+    if wanted is None:
+        print(
+            f"No profile called {name}. Known: {', '.join(store.names) or 'none'}",
+            file=sys.stderr,
+        )
+        return 1
+    catalog.rescan(config.scan_dirs, game.mods)
+    result = profiles.apply(wanted, catalog.mods, game.mods)
+    catalog.save()
+    print(f"{wanted.name}: {result.summary}")
+    for line in result.problems:
+        print(f"  {line}", file=sys.stderr)
+    for slug in result.missing:
+        print(f"  missing from the library: {slug}", file=sys.stderr)
+    return 0
+
+
 def _reset(scopes: list[str], confirmed: bool, config: Config) -> int:
     """List what a reset would remove, and remove it only when told to.
 
@@ -322,6 +393,8 @@ def main() -> int:
         return _import(args.paths, args.move, config)
     if args.command == "reset":
         return _reset(args.scopes, args.yes, config)
+    if args.command == "profile":
+        return _profile(args.action, args.name, config)
     if args.command == "register-nxm":
         from . import nxm
 

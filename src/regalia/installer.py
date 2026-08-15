@@ -11,6 +11,7 @@ name, one of the files.
 
 from __future__ import annotations
 
+import os
 import shutil
 from collections.abc import Callable
 from pathlib import Path
@@ -88,9 +89,15 @@ def _carry_choices(previous: list[Component], found: list[Component]) -> None:
 
 
 def link(mod: Mod, mods_dir: Path, overwrite: bool = False) -> None:
-    """Point the game at the store copy of each enabled component."""
+    """Point the game at the store copy of each enabled component.
+
+    Names this mod holds but no longer wants are released first. Linking only
+    the enabled components would leave the previous choice in place beside the
+    new one, so switching from the L body to the M body would run both.
+    """
     mods_dir.mkdir(parents=True, exist_ok=True)
     source_dir = store_dir(mod)
+    _release(mod, mods_dir)
 
     for component in mod.active:
         for name in component.names:
@@ -105,6 +112,29 @@ def link(mod: Mod, mods_dir: Path, overwrite: bool = False) -> None:
             target.symlink_to(source)
 
     mod.state = State.INSTALLED
+
+
+def _release(mod: Mod, mods_dir: Path) -> None:
+    """Drop links to this mod's own files that its current selection drops.
+
+    The target decides ownership, not the name. Two unrelated archives can ship
+    a container with the same stem, and removing a link because the name matches
+    would quietly uninstall whichever of them linked it last.
+    """
+    source_dir = store_dir(mod)
+    active = {name for component in mod.active for name in component.names}
+    for name in mod.all_files:
+        if name in active:
+            continue
+        target = mods_dir / name
+        if not target.is_symlink():
+            continue
+        try:
+            points_at = Path(os.readlink(target))
+        except OSError:
+            continue
+        if points_at.is_absolute() and source_dir in points_at.parents:
+            target.unlink()
 
 
 def unlink(mod: Mod, mods_dir: Path) -> None:
@@ -136,17 +166,12 @@ def install(
 def apply_selection(mod: Mod, mods_dir: Path) -> None:
     """Make the game folder match the mod's current component selection.
 
-    Called after the user turns a component on or off. Disabled components lose
-    their links and enabled ones gain them; nothing is extracted again, because
-    the store already holds every option.
+    Called after the user turns a component on or off. Nothing is extracted
+    again, because the store already holds every option; `link` releases the
+    names the new selection drops.
     """
     if not mod.is_present:
         return
-    active = {name for component in mod.active for name in component.names}
-    for name in mod.all_files:
-        target = mods_dir / name
-        if name not in active and target.is_symlink():
-            target.unlink()
     link(mod, mods_dir, overwrite=True)
 
 

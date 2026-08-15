@@ -21,7 +21,7 @@ from textual.widgets import (
     TabPane,
 )
 
-from . import conflicts, credentials, installer, library, patch, steam
+from . import conflicts, credentials, installer, library, patch, profiles, steam
 from .catalog import Catalog
 from .config import Config
 from .environment import steam_installs
@@ -40,6 +40,7 @@ from .screens import (
     ModAction,
     ModDetail,
     PartsScreen,
+    ProfilesScreen,
 )
 
 PARCHMENT = Theme(
@@ -116,6 +117,7 @@ class RegaliaApp(App[None]):
         ("e", "enable", "enable"),
         ("x", "remove", "remove"),
         ("p", "parts", "parts"),
+        ("f", "profiles", "profiles"),
         ("r", "rescan", "rescan"),
         ("n", "identify", "identify"),
         ("u", "check_updates", "updates"),
@@ -739,6 +741,43 @@ class RegaliaApp(App[None]):
             self.refresh_table()
 
         self.push_screen(PartsScreen(mod), applied)
+
+    def action_profiles(self) -> None:
+        """Save the current set of mods under a name, or switch to a saved one."""
+        store = profiles.ProfileStore.load()
+        self.push_screen(ProfilesScreen(store, self.catalog.mods), self._profile_chosen)
+
+    def _profile_chosen(self, choice) -> None:
+        if choice is None:
+            return
+        store = profiles.ProfileStore.load()
+        if choice.kind == "save":
+            try:
+                saved = profiles.capture(choice.name, self.catalog.mods)
+            except profiles.ProfileError as error:
+                self.notify(str(error), severity="error")
+                return
+            store.put(saved)
+            store.save()
+            self.log_line(f"[green]profile[/] saved {saved.name}: {saved.size} mod(s)")
+            self.notify(f"saved {saved.name}")
+            return
+        if choice.kind == "delete":
+            store.remove(choice.name)
+            store.save()
+            self.log_line(f"[yellow]profile[/] deleted {choice.name}")
+            return
+        wanted = store.get(choice.name)
+        if wanted is None or self.game is None:
+            return
+        result = profiles.apply(wanted, self.catalog.mods, self.game.mods)
+        self.catalog.save()
+        for line in result.problems:
+            self.log_line(f"[red]profile[/] {line}")
+        self.log_line(f"[green]profile[/] {wanted.name}: {result.summary}")
+        self.warnings = conflicts.check(self.catalog.mods)
+        self.refresh_table()
+        self.notify(result.summary)
 
     def action_remove(self) -> None:
         if self.game is None:
