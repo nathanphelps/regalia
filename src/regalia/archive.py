@@ -27,6 +27,9 @@ ARCHIVE_SUFFIXES = frozenset({".7z", ".zip"})
 # not noticing the download, and sends the user looking in the wrong place.
 UNSUPPORTED_SUFFIXES = frozenset({".rar", ".tar", ".gz", ".bz2", ".xz"})
 
+# Generous: a large pack legitimately takes a while to list.
+LIST_TIMEOUT = 120
+
 PROGRESS = re.compile(r"(\d{1,3})%")
 ENV_BACKEND = "REGALIA_EXTRACTOR"
 
@@ -68,12 +71,19 @@ class SevenZipExtractor:
         return self.command
 
     def list_entries(self, archive: Path) -> list[Entry]:
-        result = subprocess.run(
-            [self.command, "l", "-ba", "-slt", str(archive)],
-            capture_output=True,
-            text=True,
-            errors="replace",
-        )
+        try:
+            result = subprocess.run(
+                [self.command, "l", "-ba", "-slt", str(archive)],
+                capture_output=True,
+                text=True,
+                errors="replace",
+                timeout=LIST_TIMEOUT,
+            )
+        except subprocess.TimeoutExpired:
+            # A damaged archive can send 7z into a very long read. The scan
+            # walks every file in the library, so one of those would stall the
+            # whole list rather than skip one entry.
+            return []
         if result.returncode != 0:
             return []
         return list(_parse_slt(result.stdout))

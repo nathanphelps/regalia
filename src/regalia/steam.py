@@ -36,6 +36,8 @@ KEEP_BACKUPS = 10
 # means Steam owns the file.
 PROCESSES = ("steam", "steamwebhelper")
 
+PROBE_TIMEOUT = 5
+LAUNCH_TIMEOUT = 20
 SHUTDOWN_TIMEOUT = 30
 POLL = 0.5
 
@@ -81,7 +83,13 @@ def running_pids(install: SteamInstall | None = None) -> list[int]:
     found: set[int] = set()
     for probe in _probes(install):
         try:
-            result = subprocess.run(probe, capture_output=True, text=True)
+            result = subprocess.run(
+                probe, capture_output=True, text=True, timeout=PROBE_TIMEOUT
+            )
+        except subprocess.TimeoutExpired:
+            # A probe that will not answer must not hold the interface. Treat it
+            # as no evidence and let the other probes speak.
+            continue
         except FileNotFoundError:
             # pgrep is missing. Report nothing rather than claim Steam is down,
             # because the caller decides whether to write based on this.
@@ -133,7 +141,13 @@ def shutdown(
             f"{flavor} Steam. Close Steam yourself, then try again."
         )
 
-    subprocess.run(command, capture_output=True)
+    try:
+        # "flatpak run" or "snap run" can sit waiting on a portal or a session
+        # bus that is not there. Without a bound it would hold the worker thread
+        # for as long as that lasts, and the interface with it.
+        subprocess.run(command, capture_output=True, timeout=LAUNCH_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        pass  # it may still be quitting; the wait below settles it
     return wait_until_closed(install, timeout)
 
 

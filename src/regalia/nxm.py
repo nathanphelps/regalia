@@ -104,10 +104,32 @@ def notify(title: str, body: str, urgency: str = "normal") -> None:
     log(f"{urgency}: {body}")
     if not shutil.which("notify-send"):
         return
-    subprocess.run(
-        ["notify-send", "-u", urgency, "-a", "regalia", title, body],
-        capture_output=True,
-    )
+    _run(["notify-send", "-u", urgency, "-a", "regalia", title, body])
+
+
+DESKTOP_TIMEOUT = 10
+
+
+def _run(command: list[str]) -> subprocess.CompletedProcess:
+    """Run a desktop helper, bounded.
+
+    These talk to the session bus and the desktop's own services. A notification
+    daemon that has stopped answering, or an xdg-mime waiting on a portal, would
+    otherwise hold the calling thread for as long as it takes — and one of these
+    runs on the path a browser download takes, where there is no window to show
+    that anything is wrong.
+
+    A timeout is reported as a failed command rather than raised, because none
+    of these is worth abandoning the work for.
+    """
+    try:
+        return subprocess.run(
+            command, capture_output=True, text=True, timeout=DESKTOP_TIMEOUT
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return subprocess.CompletedProcess(
+            command, 1, "", f"{command[0]} did not answer"
+        )
 
 
 # -- desktop registration ------------------------------------------------
@@ -179,7 +201,7 @@ def app_entry_installed() -> bool:
 def refresh_desktop_database() -> bool:
     if not shutil.which("update-desktop-database"):
         return False
-    subprocess.run(["update-desktop-database", str(DESKTOP_DIR)], capture_output=True)
+    _run(["update-desktop-database", str(DESKTOP_DIR)])
     return True
 
 
@@ -219,7 +241,7 @@ def register() -> list[str]:
         if not shutil.which(command[0]):
             steps.append(f"skipped {command[0]}: not installed")
             continue
-        result = subprocess.run(command, capture_output=True, text=True)
+        result = _run(command)
         steps.append(
             f"ran {command[0]}"
             if result.returncode == 0
@@ -241,11 +263,7 @@ def unregister() -> list[str]:
             steps.append(f"the previous handler {previous} is gone; left it alone")
             previous = ""
         if previous and shutil.which("xdg-mime"):
-            result = subprocess.run(
-                ["xdg-mime", "default", previous, SCHEME],
-                capture_output=True,
-                text=True,
-            )
+            result = _run(["xdg-mime", "default", previous, SCHEME])
             steps.append(
                 f"gave nxm:// back to {previous}"
                 if result.returncode == 0
@@ -254,9 +272,7 @@ def unregister() -> list[str]:
         PREVIOUS_HANDLER.unlink()
 
     if shutil.which("update-desktop-database"):
-        subprocess.run(
-            ["update-desktop-database", str(DESKTOP_DIR)], capture_output=True
-        )
+        _run(["update-desktop-database", str(DESKTOP_DIR)])
         steps.append("refreshed the desktop database")
     return steps or ["nothing was registered"]
 
@@ -272,10 +288,7 @@ def registered_handler() -> str | None:
     """Which program currently handles nxm:// links."""
     if not shutil.which("xdg-mime"):
         return None
-    result = subprocess.run(
-        ["xdg-mime", "query", "default", SCHEME], capture_output=True, text=True
-    )
-    return result.stdout.strip() or None
+    return _run(["xdg-mime", "query", "default", SCHEME]).stdout.strip() or None
 
 
 def is_registered() -> bool:
