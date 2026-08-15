@@ -22,6 +22,13 @@ from pathlib import Path
 
 MOD_SUFFIXES = frozenset({".pak", ".ucas", ".utoc"})
 ARCHIVE_SUFFIXES = frozenset({".7z", ".zip"})
+# Formats a mod is sometimes packed in that neither backend can open. They are
+# named so the scan can say why a file was skipped: silence reads as the tool
+# not noticing the download, and sends the user looking in the wrong place.
+UNSUPPORTED_SUFFIXES = frozenset({".rar", ".tar", ".gz", ".bz2", ".xz"})
+
+# Generous: a large pack legitimately takes a while to list.
+LIST_TIMEOUT = 120
 
 PROGRESS = re.compile(r"(\d{1,3})%")
 ENV_BACKEND = "REGALIA_EXTRACTOR"
@@ -64,12 +71,19 @@ class SevenZipExtractor:
         return self.command
 
     def list_entries(self, archive: Path) -> list[Entry]:
-        result = subprocess.run(
-            [self.command, "l", "-ba", "-slt", str(archive)],
-            capture_output=True,
-            text=True,
-            errors="replace",
-        )
+        try:
+            result = subprocess.run(
+                [self.command, "l", "-ba", "-slt", str(archive)],
+                capture_output=True,
+                text=True,
+                errors="replace",
+                timeout=LIST_TIMEOUT,
+            )
+        except subprocess.TimeoutExpired:
+            # A damaged archive can send 7z into a very long read. The scan
+            # walks every file in the library, so one of those would stall the
+            # whole list rather than skip one entry.
+            return []
         if result.returncode != 0:
             return []
         return list(_parse_slt(result.stdout))
@@ -393,5 +407,22 @@ def find_archives(directories: list[Path]) -> list[Path]:
             continue
         for path in sorted(directory.iterdir()):
             if path.is_file() and path.suffix.lower() in ARCHIVE_SUFFIXES:
+                found.append(path)
+    return found
+
+
+def find_unsupported(directories: list[Path]) -> list[Path]:
+    """Archives in a format nothing here can open.
+
+    A ".rar" downloads like any other file and then never appears in the
+    library, which looks like the download failing rather than the format being
+    unreadable. Naming them lets the scan say so.
+    """
+    found: list[Path] = []
+    for directory in directories:
+        if not directory.is_dir():
+            continue
+        for path in sorted(directory.iterdir()):
+            if path.is_file() and path.suffix.lower() in UNSUPPORTED_SUFFIXES:
                 found.append(path)
     return found

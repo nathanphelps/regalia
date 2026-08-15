@@ -172,6 +172,25 @@ class NexusClient:
 
     # -- the two APIs ---------------------------------------------------
 
+    @staticmethod
+    def _decode(body: bytes) -> Any:
+        """Read a JSON reply, or say what arrived instead.
+
+        A 200 does not promise JSON. A hotel network, a corporate proxy or a
+        Cloudflare interstitial all answer with an HTML page and a success code.
+        Letting `json` raise there would escape every caller, because they guard
+        against `NexusError` and a decode failure is not one — the interface
+        would show a traceback instead of "could not reach Nexus".
+        """
+        try:
+            return json.loads(body)
+        except ValueError as error:
+            head = body[:120].decode("utf-8", "replace").strip().replace("\n", " ")
+            raise NexusError(
+                f"Nexus did not answer with JSON. Something on the network may "
+                f"be intercepting the connection. Got: {head!r}"
+            ) from error
+
     def rest(self, path: str) -> Any:
         """Call the v1 REST API. This always needs the key."""
         if not self.api_key:
@@ -180,7 +199,7 @@ class NexusClient:
         request.add_header("apikey", self.api_key)
         body, headers = self._open(request)
         self._read_rate_limit(headers)
-        return json.loads(body)
+        return self._decode(body)
 
     def graphql(self, document: str, variables: dict[str, Any] | None = None) -> Any:
         """Call the v2 GraphQL API. The key is sent when present but optional."""
@@ -189,8 +208,11 @@ class NexusClient:
         request.add_header("Content-Type", "application/json")
         if self.api_key:
             request.add_header("apikey", self.api_key)
-        body, _ = self._open(request)
-        data = json.loads(body)
+        body, headers = self._open(request)
+        # The v2 endpoint reports the same allowance as v1, and discarding these
+        # meant a run that only searched showed a stale count.
+        self._read_rate_limit(headers)
+        data = self._decode(body)
         if errors := data.get("errors"):
             raise NexusError(errors[0].get("message", "GraphQL error"))
         return data.get("data") or {}

@@ -21,7 +21,7 @@ from textual.widgets import (
     TabPane,
 )
 
-from . import conflicts, credentials, installer, patch, steam
+from . import conflicts, credentials, installer, library, patch, profiles, steam
 from .catalog import Catalog
 from .config import Config
 from .environment import steam_installs
@@ -34,7 +34,14 @@ from .nexus.models import Collection, NexusMod
 from .nexus.updates import check as check_updates
 from .panes import CollectionsPane, KeyPrompt, NexusPane
 from .paths import CONFIG_FILE, DATA_DIR, GameNotFound, GamePaths, discover_game
-from .screens import CollectionAction, CollectionDetail, ModAction, ModDetail
+from .screens import (
+    CollectionAction,
+    CollectionDetail,
+    ModAction,
+    ModDetail,
+    PartsScreen,
+    ProfilesScreen,
+)
 
 PARCHMENT = Theme(
     name="parchment",
@@ -109,6 +116,9 @@ class RegaliaApp(App[None]):
         ("d", "disable", "disable"),
         ("e", "enable", "enable"),
         ("x", "remove", "remove"),
+        ("X", "discard", "delete file"),
+        ("p", "parts", "parts"),
+        ("f", "profiles", "profiles"),
         ("r", "rescan", "rescan"),
         ("n", "identify", "identify"),
         ("u", "check_updates", "updates"),
@@ -482,7 +492,7 @@ class RegaliaApp(App[None]):
                 self.client,
                 mod_id,
                 file_id,
-                self.config.scan_dirs[0],
+                library.ensure(),
                 on_progress=progress,
             )
         except NexusError as error:
@@ -534,7 +544,7 @@ class RegaliaApp(App[None]):
                 self.client,
                 mod.mod_id,
                 file_id,
-                self.config.scan_dirs[0],
+                library.ensure(),
                 on_progress=progress,
             )
         except NexusError as error:
@@ -710,6 +720,67 @@ class RegaliaApp(App[None]):
         else:
             self.action_install()
 
+    def action_parts(self) -> None:
+        """Choose which pak sets of the mod under the cursor run."""
+        mod = self.current_mod()
+        if mod is None:
+            return
+        if not mod.has_choices:
+            self.notify("this mod has only one part")
+            return
+
+        def applied(changed: bool | None) -> None:
+            if not changed:
+                return
+            if self.game and mod.is_present:
+                try:
+                    installer.apply_selection(mod, self.game.mods)
+                except OSError as error:
+                    self.notify(str(error), severity="error")
+            self.catalog.save()
+            self.log_line(f"[green]parts[/] {mod.title}: {len(mod.active)} running")
+            self.refresh_table()
+
+        self.push_screen(PartsScreen(mod), applied)
+
+    def action_profiles(self) -> None:
+        """Save the current set of mods under a name, or switch to a saved one."""
+        store = profiles.ProfileStore.load()
+        self.push_screen(ProfilesScreen(store, self.catalog.mods), self._profile_chosen)
+
+    def _profile_chosen(self, choice) -> None:
+        if choice is None:
+            return
+        store = profiles.ProfileStore.load()
+        if choice.kind == "save":
+            try:
+                saved = profiles.capture(choice.name, self.catalog.mods)
+            except profiles.ProfileError as error:
+                self.notify(str(error), severity="error")
+                return
+            store.put(saved)
+            store.save()
+            self.log_line(f"[green]profile[/] saved {saved.name}: {saved.size} mod(s)")
+            self.notify(f"saved {saved.name}")
+            return
+        if choice.kind == "delete":
+            store.remove(choice.name)
+            store.save()
+            self.log_line(f"[yellow]profile[/] deleted {choice.name}")
+            return
+        wanted = store.get(choice.name)
+        if wanted is None or self.game is None:
+            return
+        result = profiles.apply(wanted, self.catalog.mods, self.game.mods)
+        self.catalog.verify(self.game.mods)
+        self.catalog.save()
+        for line in result.problems:
+            self.log_line(f"[red]profile[/] {line}")
+        self.log_line(f"[green]profile[/] {wanted.name}: {result.summary}")
+        self.warnings = conflicts.check(self.catalog.mods)
+        self.refresh_table()
+        self.notify(result.summary)
+
     def action_remove(self) -> None:
         if self.game is None:
             return
@@ -733,6 +804,41 @@ class RegaliaApp(App[None]):
             installer.remove(mod, self.game.mods)
             self.log_line(f"[red]removed[/] {mod.title}")
         self._finish_batch(f"removed {len(mods)} mod(s)")
+
+    def action_discard(self) -> None:
+        """Uninstall and delete the archive, so the mod does not come back."""
+        if self.game is None:
+            return
+        pending = self.targets()
+        if not pending:
+            return
+        held = sum(1 for mod in pending if library.holds(mod.source))
+        body = (
+            f"Delete {len(pending)} mod(s), their extracted files, and "
+            f"{held} archive(s) from the library.\n\n"
+            "Getting the archives back means downloading them again."
+        )
+        self.push_screen(
+            ConfirmScreen("Delete from library", body, "Delete"),
+            lambda ok: self._discard(pending) if ok else None,
+        )
+
+    def _discard(self, mods: list[Mod]) -> None:
+        assert self.game is not None
+        gone = 0
+        for mod in mods:
+            try:
+                if installer.discard(mod, self.game.mods):
+                    gone += 1
+                self.log_line(f"[red]deleted[/] {mod.title}")
+            except OSError as error:
+                self.log_line(f"[red]failed[/] {mod.title}: {error}")
+        self.catalog.rescan(self.config.scan_dirs, self.game.mods)
+        self.warnings = conflicts.check(self.catalog.mods)
+        self.catalog.save()
+        self.selected.clear()
+        self.refresh_table()
+        self.notify(f"deleted {len(mods)} mod(s), {gone} archive(s) removed")
 
     def action_repair(self) -> None:
         if self.game is None:
@@ -1278,7 +1384,7 @@ class RegaliaApp(App[None]):
     @work(thread=True, exclusive=True, group="nexus")
     def run_collection(self, plan: nexus_collections.Plan) -> None:
         self._cancel_run = False
-        destination = self.config.scan_dirs[0]
+        destination = library.ensure()
 
         def on_item(index: int, total: int, mod) -> None:
             self.call_from_thread(
@@ -1287,7 +1393,7 @@ class RegaliaApp(App[None]):
                 int(index * 100 / max(total, 1)),
             )
 
-        outcome = nexus_collections.install(
+        outcome = nexus_collections.fetch(
             self.client,
             plan,
             destination,
@@ -1306,7 +1412,14 @@ class RegaliaApp(App[None]):
             self.log_line(f"[red]nexus[/] {mod.mod_name}: {reason}")
 
         assert self.game is not None
+        # The rescan has to come between the download and the install, so the
+        # catalog holds a record for each archive that arrived.
         self.catalog.rescan(self.config.scan_dirs, self.game.mods)
+        outcome.installed, outcome.problems = nexus_collections.deploy(
+            self.catalog.mods, outcome.downloaded, self.game.mods
+        )
+        for line in outcome.problems:
+            self.log_line(f"[red]install[/] {line}")
         self.catalog.tag_collection(
             plan.collection.slug,
             set(outcome.downloaded),
@@ -1317,7 +1430,7 @@ class RegaliaApp(App[None]):
         self.refresh_table()
 
         self.notify(
-            f"{len(outcome.downloaded)} downloaded, "
+            f"{len(outcome.downloaded)} downloaded, {outcome.installed} installed, "
             f"{len(outcome.skipped)} already held, {len(outcome.failed)} failed"
         )
 

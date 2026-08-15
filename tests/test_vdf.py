@@ -146,3 +146,34 @@ def test_trailing_arguments_after_the_placeholder_survive():
 def test_merging_twice_changes_nothing():
     once = merge_override("MANGOHUD=1 %command%")
     assert merge_override(once) == once
+
+
+def test_a_byte_that_is_not_utf8_survives_a_rewrite(tmp_path):
+    """The file belongs to Steam, and only one value in it is ours to change.
+
+    A localconfig can name a game or a folder in some other encoding. Reading it
+    with "replace" and writing the result back would swap those bytes for the
+    replacement character, corrupting a part of the file that has nothing to do
+    with the launch options — and the read-back check would not notice, because
+    it compares only the value this tool set.
+    """
+    from regalia import steam
+    from regalia.paths import read_vdf
+
+    path = tmp_path / "localconfig.vdf"
+    path.write_bytes(
+        b'"UserLocalConfigStore"\n{\n\t"apps"\n\t{\n\t\t"2767030"\n\t\t{\n'
+        b'\t\t\t"LaunchOptions"\t\t"%command%"\n\t\t}\n\t\t"9999"\n\t\t{\n'
+        b'\t\t\t"name"\t\t"Caf\xe9 Simulator"\n\t\t}\n\t}\n}\n'
+    )
+
+    steam._write_atomically(
+        path, steam._rewrite(read_vdf(path), 'WINEDLLOVERRIDES="dsound=n,b" %command%')
+    )
+
+    after = path.read_bytes()
+    assert b"\xe9" in after, "the undecodable byte was rewritten"
+    assert b"\xef\xbf\xbd" not in after, "a replacement character was written"
+    assert (
+        _launch_options_in(read_vdf(path)) == 'WINEDLLOVERRIDES="dsound=n,b" %command%'
+    )

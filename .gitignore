@@ -15,6 +15,10 @@ dist/
 .superpowers/
 .remember/
 .claude/
+# ...except the domain skill, which is project documentation and ships.
+!.claude/
+!.claude/skills/
+!.claude/skills/**
 .idea/
 .vscode/
 
@@ -25,3 +29,6 @@ dist/
 # Never commit these
 credentials.toml
 nexus_api_key*
+
+# Generated screenshots
+shots/

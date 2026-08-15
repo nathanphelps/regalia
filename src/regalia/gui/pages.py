@@ -42,15 +42,27 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .. import conflicts, credentials, installer, nxm, patch, steam, variants
+from .. import (
+    components,
+    conflicts,
+    credentials,
+    installer,
+    library,
+    maintenance,
+    nxm,
+    patch,
+    steam,
+    variants,
+)
 from ..catalog import Catalog
-from ..config import Config
+from ..config import Config, suggested_import_dir
 from ..model import Mod, State
 from ..nexus import NexusClient, NexusFile, NexusImage, NexusMod, Page
 from ..nexus import collections as collection_ops
 from ..nexus.download import download_file
-from ..paths import DATA_DIR, GamePaths
+from ..paths import DATA_DIR, LIBRARY_DIR, GameNotFound, GamePaths, discover_game
 from .images import ImageCache
+from .setup import ReadinessPanel
 from .state import GuiState
 from .tasks import TaskCoordinator
 from .widgets import (
@@ -244,10 +256,10 @@ class VariantStudioDialog(QDialog):
         super().__init__(parent)
         self.context = context
         self.siblings = siblings
-        self.setWindowTitle("Variant studio")
+        self.setWindowTitle("Files from this mod page")
         self.resize(900, 590)
         layout = QVBoxLayout(self)
-        title = QLabel("VARIANT STUDIO")
+        title = QLabel("FILES FROM THIS MOD PAGE")
         title.setObjectName("pageTitle")
         layout.addWidget(title)
         nexus_name = next(
@@ -258,14 +270,19 @@ class VariantStudioDialog(QDialog):
             ),
             siblings[0].hero,
         )
+        # "One active at a time" used to be printed here and it was not true.
+        # Two files from one mod page that dress different costumes both run.
+        # Only the ones writing the same asset displace each other.
         intro = QLabel(
-            f"{nexus_name} · {len(siblings)} local choices · one active at a time"
+            f"{nexus_name} · {len(siblings)} file(s) from this mod page. "
+            "Making one active switches off only the files it would overwrite."
         )
+        intro.setWordWrap(True)
         intro.setObjectName("eyebrow")
         layout.addWidget(intro)
         self.table = QTableWidget(0, 6)
         self.table.setHorizontalHeaderLabels(
-            ("Variant", "Version", "State", "Archive", "Size", "Identity")
+            ("File", "Version", "State", "Archive", "Size", "Identity")
         )
         self.table.horizontalHeader().setSectionResizeMode(
             3, QHeaderView.ResizeMode.Stretch
@@ -412,7 +429,7 @@ class LibraryPage(QWidget):
         self.issue_filter.addItem("Unverified", "unverified")
         self.issue_filter.addItem("Held", "held")
         self.issue_filter.addItem("Active", "active")
-        self.grouped = QCheckBox("Group variants")
+        self.grouped = QCheckBox("Group files by mod page")
         self.grouped.setChecked(True)
         rescan = QPushButton("Rescan")
         identify = QPushButton("Identify with Nexus")
@@ -430,6 +447,7 @@ class LibraryPage(QWidget):
         bar.addWidget(identify)
         bar.addWidget(updates)
         layout.addLayout(bar)
+
         self.result_summary = QLabel()
         self.result_summary.setObjectName("eyebrow")
         layout.addWidget(self.result_summary)
@@ -458,14 +476,30 @@ class LibraryPage(QWidget):
         self.detail.setWordWrap(True)
         detail_layout.addWidget(self.detail_title)
         detail_layout.addWidget(self.detail)
-        detail_layout.addWidget(section_title("Variants and versions"))
+        # The parts of one archive. Most mods have exactly one and the section
+        # stays hidden; the ones that hold twenty-four are why it exists.
+        self.parts_title = section_title("Parts of this mod")
+        detail_layout.addWidget(self.parts_title)
+        self.parts_hint = QLabel()
+        self.parts_hint.setWordWrap(True)
+        self.parts_hint.setObjectName("partsHint")
+        detail_layout.addWidget(self.parts_hint)
+        self.parts_list = QListWidget()
+        self.parts_list.setMaximumHeight(210)
+        self.parts_list.itemChanged.connect(self._part_toggled)
+        detail_layout.addWidget(self.parts_list)
+
+        # Named for what it holds. "Variants" was doing two jobs — the parts
+        # inside one archive, and the separate files a mod page offers — and the
+        # two sections sat next to each other under one word.
+        detail_layout.addWidget(section_title("Other files from this mod page"))
         self.variant_list = QListWidget()
         self.variant_list.setMaximumHeight(190)
         detail_layout.addWidget(self.variant_list)
-        activate_variant = QPushButton("Activate selected variant")
+        activate_variant = QPushButton("Make the selected file active")
         activate_variant.clicked.connect(self.activate_variant)
         detail_layout.addWidget(activate_variant)
-        manage_variants = QPushButton("Open variant studio…")
+        manage_variants = QPushButton("Rename and annotate files…")
         manage_variants.clicked.connect(self.open_variant_studio)
         detail_layout.addWidget(manage_variants)
         actions = QGridLayout()
@@ -476,6 +510,7 @@ class LibraryPage(QWidget):
                 ("Disable", self.disable),
                 ("Uninstall", self.remove),
                 ("Repair", self.repair),
+                ("Delete from library", self.discard),
                 ("Open Nexus", self.open_selected_nexus),
             )
         ):
@@ -613,7 +648,7 @@ class LibraryPage(QWidget):
         self.refresh_detail()
         active_filters = sum(bool(value) for value in (query, hero, issue))
         active_filters += state_text != "All states"
-        mode = "variant groups" if self.grouped.isChecked() else "archives"
+        mode = "mod pages" if self.grouped.isChecked() else "archives"
         self.result_summary.setText(
             f"{len(rows):,} {mode} · {len(mods):,} matching archives"
             + (f" · {active_filters} active filters" if active_filters else "")
@@ -628,6 +663,7 @@ class LibraryPage(QWidget):
             self.detail.setText("")
             self.cover.set_content("", "Select a mod")
             self.variant_list.clear()
+            self._show_parts(None)
             return
         self.detail_title.setText(mod.title)
         self._cover_slug = mod.slug
@@ -648,6 +684,7 @@ class LibraryPage(QWidget):
             notes.append(f"NOTE · {mod.variant_note}")
         self.detail.setText("\n\n".join(filter(None, notes)))
         self.cover.set_content(image, mod.title, mod.state.value.upper())
+        self._show_parts(mod)
         self.variant_list.clear()
         siblings = self.variant_siblings(mod)
         for sibling in siblings:
@@ -667,6 +704,85 @@ class LibraryPage(QWidget):
             self.variant_list.addItem(item)
             if sibling is mod:
                 self.variant_list.setCurrentItem(item)
+
+    def _show_parts(self, mod: Mod | None) -> None:
+        """List the archive's pak sets, grouped into the choices the author made.
+
+        A mod with one part hides the whole section: showing a single tickbox
+        that must stay ticked teaches the user nothing and takes the space the
+        artwork wants.
+        """
+        # Repopulating fires itemChanged for every row. Without the guard each
+        # rebuild would be read back as the user unticking things.
+        self._loading_parts = True
+        try:
+            self.parts_list.clear()
+            visible = bool(mod and mod.has_choices)
+            self.parts_title.setVisible(visible)
+            self.parts_hint.setVisible(visible)
+            self.parts_list.setVisible(visible)
+            if not visible or mod is None:
+                return
+
+            grouped = components.groups(mod.components)
+            alternatives = sum(1 for group in grouped if len(group) > 1)
+            self.parts_hint.setText(
+                f"{len(mod.components)} parts in {len(grouped)} group(s). "
+                f"Parts in one group overwrite each other, so only one can run."
+                if alternatives
+                else f"{len(mod.components)} parts, none of which overlap."
+            )
+
+            for number, group in enumerate(grouped, start=1):
+                exclusive = len(group) > 1
+                for component in group:
+                    mark = f"[{number}] " if exclusive else "[+] "
+                    label = f"{mark}{component.label}"
+                    if not component.is_readable:
+                        label += "  (contents unreadable)"
+                    item = QListWidgetItem(label)
+                    item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+                    item.setCheckState(
+                        Qt.CheckState.Checked
+                        if component.enabled
+                        else Qt.CheckState.Unchecked
+                    )
+                    item.setData(
+                        Qt.ItemDataRole.UserRole, (component.folder, component.stem)
+                    )
+                    self.parts_list.addItem(item)
+        finally:
+            self._loading_parts = False
+
+    def _part_toggled(self, item: QListWidgetItem) -> None:
+        """Turn a part on or off, and switch off whatever it would overwrite."""
+        if getattr(self, "_loading_parts", False):
+            return
+        mod = self.current_mod()
+        if mod is None:
+            return
+        key = item.data(Qt.ItemDataRole.UserRole)
+        component = next(
+            (item_ for item_ in mod.components if (item_.folder, item_.stem) == key),
+            None,
+        )
+        if component is None:
+            return
+
+        if item.checkState() == Qt.CheckState.Checked:
+            displaced = components.enable(component, mod.components)
+            if displaced:
+                names = ", ".join(other.label for other in displaced[:3])
+                self.context.notify(f"Switched off {len(displaced)} part(s): {names}")
+        else:
+            component.enabled = False
+
+        try:
+            installer.apply_selection(mod, self.context.game.mods)
+        except Exception as error:  # the game folder can refuse a link
+            self.context.notify(str(error), True)
+        self.context.catalog.save()
+        self.refresh()
 
     def _load_detail_cover(self) -> None:
         mod = self.context.catalog.by_slug(self._cover_slug)
@@ -773,6 +889,13 @@ class LibraryPage(QWidget):
             for index, mod in enumerate(mods, 1):
                 progress(int((index - 1) / len(mods) * 100), mod.title)
                 function(mod, game)
+            # Reconcile before saving. Installing sets the state at the moment
+            # the links are made, and a later mod in the same batch can take a
+            # name the earlier one had — two archives shipping a container with
+            # the same stem is common enough to see in any real library. Without
+            # this the loser stays recorded as installed, and Repair leaves it
+            # alone because nothing looks wrong. The terminal already did it.
+            self.context.catalog.verify(game.mods)
             self.context.catalog.save()
             return len(mods)
 
@@ -822,6 +945,64 @@ class LibraryPage(QWidget):
                 lambda mod, game: installer.remove(mod, game.mods),
                 mods,
             )
+
+    def discard(self) -> None:
+        """Uninstall and delete the archive, so the mod does not come back.
+
+        Uninstalling leaves the archive, so the next scan finds it again. That
+        is right nine times out of ten and wrong when the user has decided a mod
+        is not for them, and there was no way to say so from here.
+        """
+        mods = self.selected_mods()
+        if not mods:
+            return
+        held = [mod for mod in mods if library.holds(mod.source)]
+        elsewhere = len(mods) - len(held)
+
+        lines = [f"Delete {len(mods)} mod(s) and their extracted files."]
+        if held:
+            lines.append(
+                f"{len(held)} archive(s) in the library will be deleted too. "
+                "Getting them back means downloading them again."
+            )
+        if elsewhere:
+            lines.append(
+                f"{elsewhere} archive(s) live in a folder you watch rather than "
+                "in the library. Those files are left alone, so the mod will "
+                "come back on the next scan."
+            )
+        answer = QMessageBox.warning(
+            self,
+            "Delete from library",
+            "\n\n".join(lines),
+            QMessageBox.StandardButton.Cancel | QMessageBox.StandardButton.Ok,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if answer != QMessageBox.StandardButton.Ok:
+            return
+
+        game = self._require_game()
+        if not game:
+            return
+
+        def work(progress):
+            gone = 0
+            for index, mod in enumerate(mods, 1):
+                progress(int((index - 1) / len(mods) * 100), mod.title)
+                if installer.discard(mod, game.mods):
+                    gone += 1
+            self.context.catalog.rescan(self.context.config.scan_dirs, game.mods)
+            self.context.catalog.save()
+            return gone
+
+        self.context.tasks.submit(
+            "Delete from library",
+            work,
+            on_result=lambda gone: self._action_done(
+                f"Deleted {len(mods)} mod(s), {gone} archive(s) removed"
+            ),
+            on_error=lambda message, trace: self.context.notify(message, True),
+        )
 
     def repair(self) -> None:
         game = self._require_game()
@@ -1135,7 +1316,7 @@ class ModDetailDialog(QDialog):
                 self.context.client,
                 self.mod.mod_id,
                 file.file_id,
-                self.context.config.scan_dirs[0],
+                library.ensure(),
                 file_name=file.name,
                 on_progress=bytes_progress,
             )
@@ -1586,15 +1767,23 @@ class CollectionDialog(QDialog):
             def item(index, total, mod):
                 progress(int((index - 1) / max(total, 1) * 100), mod.mod_name)
 
-            outcome = collection_ops.install(
+            outcome = collection_ops.fetch(
                 self.context.client,
                 plan,
-                self.context.config.scan_dirs[0],
+                library.ensure(),
                 on_item=item,
             )
             if self.context.game:
+                # The rescan has to come between the download and the install,
+                # so the catalog holds a record for each archive that arrived.
                 self.context.catalog.rescan(
                     self.context.config.scan_dirs, self.context.game.mods
+                )
+                progress(99, "installing")
+                outcome.installed, outcome.problems = collection_ops.deploy(
+                    self.context.catalog.mods,
+                    outcome.downloaded,
+                    self.context.game.mods,
                 )
             pairs = {(mod.mod_id, mod.file_id) for mod in plan.wanted}
             self.context.catalog.tag_collection(self.collection.slug, pairs)
@@ -1610,10 +1799,15 @@ class CollectionDialog(QDialog):
         self.accept()
 
     def _done(self, outcome) -> None:
-        message = f"Downloaded {len(outcome.downloaded)} collection file(s)"
+        message = (
+            f"Downloaded {len(outcome.downloaded)} file(s), "
+            f"installed {outcome.installed}"
+        )
         if outcome.failed:
-            message += f" · {len(outcome.failed)} failed"
-        self.context.notify(message, bool(outcome.failed))
+            message += f" · {len(outcome.failed)} download(s) failed"
+        if outcome.problems:
+            message += f" · {len(outcome.problems)} install(s) failed"
+        self.context.notify(message, bool(outcome.failed or outcome.problems))
         self.context.refresh_all()
 
 
@@ -1967,7 +2161,43 @@ class ActivityPage(QWidget):
             )
 
 
+# Tall enough that a form row cannot squeeze a field into a sliver.
+FIELD_HEIGHT = 30
+
+
+def _scrollable(inner) -> QScrollArea:
+    """Put a layout in a panel that scrolls rather than shrinks.
+
+    Qt reduces a widget below its sizeHint before it will show a scrollbar, so a
+    tall column in a short window silently flattens every field in it. Giving
+    the content its own scroll area means the fields keep their size and the
+    panel scrolls instead.
+    """
+    host = QWidget()
+    if isinstance(inner, QWidget):
+        holder = QVBoxLayout(host)
+        holder.addWidget(inner)
+    else:
+        host.setLayout(inner)
+
+    area = QScrollArea()
+    area.setWidgetResizable(True)
+    area.setFrameShape(QFrame.Shape.NoFrame)
+    area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+    area.setWidget(host)
+    return area
+
+
 class SettingsPage(QWidget):
+    """Everything that can be changed, and everything that is not yet right.
+
+    One screen rather than two. Setup and Settings both owned the game folder,
+    the Nexus key and the browser handler, named them differently, and disagreed
+    about which was the place to change them.
+    """
+
+    open_patch = Signal()
+
     def __init__(self, context: Context) -> None:
         super().__init__()
         self.context = context
@@ -1975,22 +2205,36 @@ class SettingsPage(QWidget):
         title = QLabel("SETTINGS")
         title.setObjectName("pageTitle")
         layout.addWidget(title)
-        form = QFormLayout()
+
+        # What is wrong comes first, with the button that fixes it. This used to
+        # be a page of its own called Setup, which asked for the game folder and
+        # the Nexus key under different names from the ones here — two screens
+        # for one job, and no way to tell which owned the answer.
+        self.readiness = ReadinessPanel(self.context)
+        self.readiness.open_patch.connect(self.open_patch.emit)
+        layout.addWidget(self.readiness)
+
         self.key = QLineEdit()
         self.key.setEchoMode(QLineEdit.EchoMode.Password)
         self.key.setPlaceholderText(credentials.mask(credentials.load_key()))
         self.game_root = QLineEdit(
             str(context.config.game_root or (context.game.root if context.game else ""))
         )
+        game_detect = QPushButton("Detect")
+        game_detect.clicked.connect(self.detect_game)
         game_pick = QPushButton("Browse…")
         game_pick.clicked.connect(self.pick_game)
         game_row = QHBoxLayout()
         game_row.addWidget(self.game_root, 1)
+        game_row.addWidget(game_detect)
         game_row.addWidget(game_pick)
         game_box = QWidget()
         game_box.setLayout(game_row)
         self.scan = QListWidget()
-        self.scan.setMaximumHeight(130)
+        # Small on purpose. This is the least used setting on the screen — most
+        # people never add one — and at its old height it was the largest thing
+        # in the tab, above the game folder everyone does need.
+        self.scan.setMaximumHeight(84)
         for path in context.config.scan_dirs:
             self.scan.addItem(str(path))
         scan_buttons = QHBoxLayout()
@@ -2000,9 +2244,16 @@ class SettingsPage(QWidget):
         remove_scan.clicked.connect(self.remove_scan)
         scan_buttons.addWidget(add_scan)
         scan_buttons.addWidget(remove_scan)
+        watch_hint = QLabel(
+            "Optional. The library is always read; add a folder here only to "
+            "watch archives you keep somewhere else."
+        )
+        watch_hint.setWordWrap(True)
+        watch_hint.setObjectName("eyebrow")
         scan_box = QWidget()
         scan_layout = QVBoxLayout(scan_box)
         scan_layout.setContentsMargins(0, 0, 0, 0)
+        scan_layout.addWidget(watch_hint)
         scan_layout.addWidget(self.scan)
         scan_layout.addLayout(scan_buttons)
         self.theme = QComboBox()
@@ -2018,13 +2269,70 @@ class SettingsPage(QWidget):
             )
         index = self.cache.findData(context.config.image_cache_mb)
         self.cache.setCurrentIndex(index if index >= 0 else 2)
-        form.addRow("Nexus API key", self.key)
-        form.addRow("Game root", game_box)
-        form.addRow("Scan folders", scan_box)
-        form.addRow("Theme", self.theme)
-        form.addRow("Library density", self.density)
-        form.addRow("Image cache", self.cache)
-        layout.addLayout(form)
+        # Grouped into tabs, and named the same words throughout. One long
+        # column squeezed every field once the readiness panel was added above
+        # it: Qt shrinks a widget below its sizeHint before it will scroll, so
+        # the boxes the user actually types in were the first thing to give.
+        self.library_line = QLabel()
+        self.library_line.setWordWrap(True)
+        self.library_line.setObjectName("eyebrow")
+        import_button = QPushButton("Import…")
+        import_button.clicked.connect(self.import_archives)
+        open_library = QPushButton("Open folder")
+        open_library.clicked.connect(
+            lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(LIBRARY_DIR)))
+        )
+        library_row = QHBoxLayout()
+        library_row.addWidget(self.library_line, 1)
+        library_row.addWidget(import_button)
+        library_row.addWidget(open_library)
+        library_box = QWidget()
+        library_box.setLayout(library_row)
+
+        # Nothing here may be squeezed to nothing. A form row will happily
+        # collapse a line edit to a few pixels when the column runs out of room.
+        for field in (self.game_root, self.key, self.theme, self.density, self.cache):
+            field.setMinimumHeight(FIELD_HEIGHT)
+        self.game_root.setMinimumWidth(260)
+
+        game_form = QFormLayout()
+        game_form.addRow("Game folder", game_box)
+        game_form.addRow("Mod library", library_box)
+        game_form.addRow("Extra folders to watch", scan_box)
+
+        nexus_form = QFormLayout()
+        nexus_form.addRow("API key", self.key)
+        key_hint = QLabel(
+            "Search works without a key. Downloads and collections need one: "
+            f'<a href="{credentials.API_KEY_URL}">{credentials.API_KEY_URL}</a>'
+        )
+        key_hint.setOpenExternalLinks(True)
+        key_hint.setWordWrap(True)
+        key_hint.setObjectName("eyebrow")
+        # Said here as well as in the panel above, because the panel stops
+        # saying it the moment a key is set — and that is exactly when someone
+        # comes looking for where the key came from.
+        nexus_form.addRow("", key_hint)
+
+        self.handler = QLabel()
+        self.handler.setWordWrap(True)
+        nexus_form.addRow("Browser links", self.handler)
+        # Registering lives in the panel at the top, and only while it is still
+        # to be done. Two buttons a screen apart, both called something close to
+        # "register the handler", is the confusion this screen was merged to end.
+        unregister = QPushButton("Hand nxm:// back to the previous program")
+        unregister.clicked.connect(self.unregister_nxm)
+        unregister_row = QHBoxLayout()
+        unregister_row.addWidget(unregister)
+        unregister_row.addStretch()
+        unregister_box = QWidget()
+        unregister_box.setLayout(unregister_row)
+        nexus_form.addRow("", unregister_box)
+
+        look_form = QFormLayout()
+        look_form.addRow("Theme", self.theme)
+        look_form.addRow("Library density", self.density)
+        look_form.addRow("Image cache", self.cache)
         cache_panel = QFrame()
         cache_panel.setObjectName("statCard")
         cache_layout = QHBoxLayout(cache_panel)
@@ -2037,27 +2345,80 @@ class SettingsPage(QWidget):
         cache_layout.addWidget(self.cache_status, 1)
         cache_layout.addWidget(inspect_cache)
         cache_layout.addWidget(clear_cache)
-        layout.addWidget(cache_panel)
+        look_form.addRow("", cache_panel)
+
+        reset_hint = QLabel(
+            "Each of these lists exactly what it would remove before it removes "
+            "anything. Only the last one touches your downloaded archives."
+        )
+        reset_hint.setWordWrap(True)
+        reset_hint.setObjectName("eyebrow")
+        resets = QVBoxLayout()
+        resets.addWidget(reset_hint)
+        # Each one says what it costs to undo. Three buttons in a row, named
+        # only by what they remove, gives no way to tell which is the cheap one.
+        for label, scopes, title, cost in (
+            (
+                "Unlink every mod",
+                ["links"],
+                "Remove the game's links",
+                "The game loads no mods. Everything is kept — switching them "
+                "back on costs nothing.",
+            ),
+            (
+                "Delete extracted files",
+                ["links", "store"],
+                "Remove the links and the extracted files",
+                "Frees the most space. Reinstalling means extracting the "
+                "archives again, which you still have.",
+            ),
+            (
+                "Forget everything",
+                ["links", "store", "catalog", "cache"],
+                "Remove links, extracted files, the mod list and artwork",
+                "A clean slate. Your archives, your key and your settings stay.",
+            ),
+            (
+                "Delete the archives too",
+                ["links", "store", "catalog", "cache", "library"],
+                "Remove everything, including the downloaded archives",
+                "Everything above, plus the archives themselves. This is the "
+                "only one you cannot undo without downloading again.",
+            ),
+        ):
+            row = QHBoxLayout()
+            button = QPushButton(label)
+            button.setMinimumWidth(200)
+            button.clicked.connect(lambda _=False, s=scopes, t=title: self.reset(s, t))
+            note = QLabel(cost)
+            note.setWordWrap(True)
+            note.setObjectName("eyebrow")
+            row.addWidget(button)
+            row.addWidget(note, 1)
+            holder = QWidget()
+            holder.setLayout(row)
+            resets.addWidget(holder)
+        resets.addStretch()
+
+        tabs = QTabWidget()
+        tabs.addTab(_scrollable(game_form), "Game and mods")
+        tabs.addTab(_scrollable(nexus_form), "Nexus")
+        tabs.addTab(_scrollable(look_form), "Appearance")
+        tabs.addTab(_scrollable(resets), "Start over")
+        layout.addWidget(tabs, 1)
+
+        # Save sits outside the tabs, because the values it writes are spread
+        # across them and a button that disappears when you change tab reads as
+        # a button that does not apply to the tab you are on.
         save = QPushButton("Save settings")
         save.clicked.connect(self.save)
         layout.addWidget(save)
-        layout.addWidget(section_title("Nexus browser links"))
-        self.handler = QLabel()
-        layout.addWidget(self.handler)
-        handlers = QHBoxLayout()
-        register = QPushButton("Register nxm:// handler")
-        unregister = QPushButton("Unregister")
-        register.clicked.connect(self.register_nxm)
-        unregister.clicked.connect(self.unregister_nxm)
-        handlers.addWidget(register)
-        handlers.addWidget(unregister)
-        handlers.addStretch()
-        layout.addLayout(handlers)
-        layout.addStretch()
+
         self._cache_disk: tuple[int, int] | None = None
         context.images.changed.connect(self.refresh_cache)
         self.refresh_cache()
         self.refresh_handler()
+        self.refresh_library()
 
     def refresh_cache(self, measure: bool = False) -> None:
         if measure:
@@ -2079,6 +2440,86 @@ class SettingsPage(QWidget):
         self._cache_disk = (0, 0)
         self.refresh_cache()
         self.context.notify(f"Cleared {count:,} cached images · {human_size(size)}")
+
+    def detect_game(self) -> None:
+        """Ask Steam where the game is, rather than making the user find it."""
+        from ..environment import steam_installs
+
+        try:
+            found = discover_game(
+                None, steam_installs(self.context.config.steam_root, refresh=True)
+            )
+        except GameNotFound as error:
+            self.context.notify(str(error), True)
+            return
+        self.game_root.setText(str(found.root))
+        self.context.notify(f"Found the game at {found.root}")
+
+    def import_archives(self) -> None:
+        """Bring archives from anywhere into the library the tool manages."""
+        start = str(suggested_import_dir())
+        path = QFileDialog.getExistingDirectory(self, "Folder holding mods", start)
+        if not path:
+            return
+        self.context.tasks.submit(
+            "Import mods",
+            lambda progress: library.import_all([Path(path)], move=False),
+            on_result=self._imported,
+            on_error=lambda message, trace: self.context.notify(message, True),
+        )
+
+    def _imported(self, log: list[str]) -> None:
+        added = sum(1 for line in log if line.startswith(("copied", "moved")))
+        self.context.notify(f"Imported {added} archive(s)")
+        self.refresh_library()
+        self.context.refresh_all()
+
+    def refresh_library(self) -> None:
+        count, total = library.size()
+        self.library_line.setText(
+            f"{LIBRARY_DIR}  ·  {count} archive(s), {maintenance.human(total)}"
+        )
+
+    def reset(self, scopes: list[str], title: str) -> None:
+        """Show exactly what would go, then remove it only if the user agrees.
+
+        The list is the point. "Reset" means different things to different
+        people, and the only way to be sure is to name every file first.
+        """
+        game = self.context.game
+        claimed = {name for mod in self.context.catalog.mods for name in mod.all_files}
+        todo = maintenance.plan(scopes, game.mods if game else None, claimed)
+        if todo.is_empty:
+            self.context.notify("Nothing to remove")
+            return
+
+        lines = [
+            f"{scope}: {len(items)} item(s) — {maintenance.DESCRIPTIONS[scope]}"
+            for scope, items in todo.by_scope().items()
+        ]
+        # The library is the one scope that cannot be undone from disk, so it
+        # asks in stronger terms than the rest and never rides along with them.
+        destructive = todo.touches_destructive
+        answer = QMessageBox.warning(
+            self,
+            f"{title} — this cannot be undone" if destructive else title,
+            f"This removes {todo.count} item(s), {maintenance.human(todo.bytes)}:\n\n"
+            + "\n".join(lines)
+            + (
+                "\n\nThe archives go too. Getting them back means downloading "
+                "every one again."
+                if destructive
+                else "\n\nThe archives stay, so everything here can be rebuilt."
+            ),
+            QMessageBox.StandardButton.Cancel | QMessageBox.StandardButton.Ok,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if answer != QMessageBox.StandardButton.Ok:
+            return
+        for line in maintenance.run(todo):
+            self.context.notify(line)
+        self.context.refresh_all()
+        self.refresh_library()
 
     def pick_game(self) -> None:
         path = QFileDialog.getExistingDirectory(self, "Marvel Rivals folder")
@@ -2121,15 +2562,6 @@ class SettingsPage(QWidget):
         self.context.refresh_all()
         self.context.notify("Settings saved · restart only if the game path changed")
 
-    def register_nxm(self) -> None:
-        try:
-            result = nxm.register()
-        except Exception as error:  # noqa: BLE001 - desktop integration varies by host
-            self.context.notify(str(error), True)
-        else:
-            self.context.notify(" · ".join(result))
-            self.refresh_handler()
-
     def unregister_nxm(self) -> None:
         try:
             result = nxm.unregister()
@@ -2138,6 +2570,8 @@ class SettingsPage(QWidget):
         else:
             self.context.notify(" · ".join(result))
             self.refresh_handler()
+            # The panel above offers to register again, so it has to be told.
+            self.readiness.refresh()
 
     def refresh_handler(self) -> None:
         handler = nxm.registered_handler()

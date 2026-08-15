@@ -65,6 +65,9 @@ class Outcome:
     skipped: list[CollectionMod] = field(default_factory=list)
     failed: list[tuple[CollectionMod, str]] = field(default_factory=list)
     cancelled: bool = False
+    # Filled in by `deploy`, which runs after the caller has rescanned.
+    installed: int = 0
+    problems: list[str] = field(default_factory=list)
 
 
 def plan(
@@ -107,7 +110,7 @@ def resolve_file_id(mod: CollectionMod) -> int:
     return mod.file_id
 
 
-def install(
+def fetch(
     client: NexusClient,
     plan: Plan,
     destination: Path,
@@ -115,10 +118,14 @@ def install(
     on_bytes: Callable[[int, int], None] | None = None,
     cancelled: Callable[[], bool] | None = None,
 ) -> Outcome:
-    """Download every member of the plan into the scan folder.
+    """Download every member of the plan into the library.
 
     Members download a few at a time. A failure is retried, then recorded, and
     the run continues; one bad member must not abandon the other hundred.
+
+    Downloading is only half of installing a collection. `deploy` does the rest,
+    and the two are separate because the catalog has to see the new archives in
+    between.
     """
     outcome = Outcome()
     outcome.skipped = list(plan.already_held)
@@ -190,3 +197,53 @@ def install(
 
     outcome.cancelled = stop()
     return outcome
+
+
+def deploy(
+    mods: list,
+    downloaded: list[Path],
+    mods_dir: Path,
+    on_item: Callable[[int, int, str], None] | None = None,
+) -> tuple[int, list[str]]:
+    """Extract and link the mods a collection just brought in.
+
+    Downloading a hundred archives and leaving them switched off is not what a
+    user means by installing a collection. The caller rescans first, so the
+    catalog holds a record for each new archive; this then installs the records
+    whose archive is one of the downloads.
+
+    Returns how many were installed and one line per failure. A member that
+    cannot be installed must not abandon the rest, for the same reason a member
+    that cannot be downloaded does not.
+    """
+    from .. import installer
+    from ..model import State
+
+    wanted = {path.resolve() for path in downloaded}
+    targets = [
+        mod
+        for mod in mods
+        if mod.state is not State.UNSUPPORTED and _resolved(mod.source) in wanted
+    ]
+
+    installed = 0
+    problems: list[str] = []
+    for index, mod in enumerate(targets, start=1):
+        if on_item:
+            on_item(index, len(targets), mod.title)
+        try:
+            # A curator picks overlapping mods on purpose, and the later member
+            # is meant to win, so a name already taken is overwritten rather
+            # than treated as an error.
+            installer.install(mod, mods_dir, overwrite=True)
+            installed += 1
+        except Exception as error:  # noqa: BLE001 - one member must not end the run
+            problems.append(f"{mod.title}: {type(error).__name__}: {error}")
+    return installed, problems
+
+
+def _resolved(path: Path) -> Path:
+    try:
+        return path.resolve()
+    except OSError:
+        return path

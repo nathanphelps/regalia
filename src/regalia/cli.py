@@ -10,8 +10,10 @@ import argparse
 import sys
 from pathlib import Path
 
+from . import maintenance
 from .archive import NoExtractor, require_extractor
 from .config import Config
+from .maintenance import SCOPES
 
 TUI_MISSING = (
     "The terminal interface is not installed. Add it with:\n"
@@ -45,6 +47,37 @@ def _build_parser() -> argparse.ArgumentParser:
     sub.add_parser("install-desktop-entry", help="add regalia to the menu")
     sub.add_parser("remove-desktop-entry", help="take regalia out of the menu")
     sub.add_parser("status", help="print the current state and exit")
+
+    importer = sub.add_parser(
+        "import", help="copy archives into the library the tool manages"
+    )
+    importer.add_argument("paths", nargs="+", type=Path, help="files or folders")
+    importer.add_argument(
+        "--move",
+        action="store_true",
+        help="move instead of copying, leaving the source folder empty",
+    )
+
+    profile = sub.add_parser(
+        "profile", help="save, list, apply or delete a named set of mods"
+    )
+    profile.add_argument(
+        "action", choices=("list", "save", "apply", "delete"), nargs="?", default="list"
+    )
+    profile.add_argument("name", nargs="?", help="the profile to act on")
+
+    resetter = sub.add_parser(
+        "reset", help="remove what the tool made; lists it first and asks"
+    )
+    resetter.add_argument(
+        "scopes",
+        nargs="*",
+        help=f"any of: {', '.join(SCOPES)}, or 'all' for everything but the library",
+    )
+    resetter.add_argument(
+        "--yes", action="store_true", help="do it, rather than only listing it"
+    )
+
     cleaner = sub.add_parser(
         "clean", help="list downloads that never finished; -y deletes them"
     )
@@ -82,7 +115,7 @@ def _handle_nxm(url: str, config: Config) -> int:
 
     This runs without a terminal, so every result goes to the desktop.
     """
-    from . import credentials, nxm
+    from . import credentials, library, nxm
     from .nexus import NexusClient, NexusError
     from .nexus.download import download_file
 
@@ -101,7 +134,10 @@ def _handle_nxm(url: str, config: Config) -> int:
         print(message, file=sys.stderr)
         return 3
 
-    destination = config.scan_dirs[0]
+    # Into the library, never the browser's download folder. A file there gets
+    # renamed on a repeat download and swept up by the desktop cleaner, and the
+    # catalog keys a mod by its archive path.
+    destination = library.ensure()
     nxm.notify("regalia", f"Downloading mod {link.mod_id}…")
     try:
         path = download_file(
@@ -139,7 +175,15 @@ def _status(config: Config) -> int:
     except GameNotFound as error:
         print(f"game        : not found — {error}")
 
-    print(f"scan folders: {', '.join(str(p) for p in config.scan_dirs)}")
+    from . import library
+    from .paths import LIBRARY_DIR
+
+    count, total = library.size()
+    print(
+        f"library     : {LIBRARY_DIR}  ({count} archive(s), {maintenance.human(total)})"
+    )
+    extra = ", ".join(str(p) for p in config.scan_dirs)
+    print(f"also watching: {extra or 'nothing'}")
     print(f"nexus key   : {credentials.mask(credentials.load_key())}")
     if warning := credentials.file_mode_warning():
         print(f"  warning   : {warning}")
@@ -147,6 +191,137 @@ def _status(config: Config) -> int:
     owner = "ours" if nxm.is_registered() else "not ours"
     print(f"nxm handler : {handler or 'none'}  ({owner})")
     print(f"game domain : {GAME_DOMAIN}")
+    return 0
+
+
+def _import(paths: list[Path], move: bool, config: Config) -> int:
+    """Bring archives into the library so the catalog stops depending on them."""
+    from . import library
+
+    log = library.import_all([path.expanduser() for path in paths], move)
+    for line in log:
+        print(line)
+    count, size = library.size()
+    print(f"library: {count} archive(s), {maintenance.human(size)}")
+    return 0
+
+
+def _profile(action: str, name: str | None, config: Config) -> int:
+    """Save the current deployment under a name, or switch to a saved one."""
+    from . import profiles
+    from .catalog import Catalog
+    from .paths import GameNotFound, discover_game
+
+    store = profiles.ProfileStore.load()
+
+    if action == "list":
+        if not store.profiles:
+            print("No profiles yet. Save one with: regalia profile save <name>")
+            return 0
+        for item in store.profiles:
+            when = item.saved.split("T")[0] if item.saved else "—"
+            print(f"{item.name:<24} {item.size:>4} mod(s)   saved {when}")
+        return 0
+
+    if not name:
+        print(f"Which profile? regalia profile {action} <name>", file=sys.stderr)
+        return 2
+
+    try:
+        game = discover_game(config.game_root)
+    except GameNotFound as error:
+        print(f"Game not found — {error}", file=sys.stderr)
+        return 2
+
+    catalog = Catalog.load()
+
+    if action == "delete":
+        if not store.remove(name):
+            print(f"No profile called {name}", file=sys.stderr)
+            return 1
+        store.save()
+        print(f"Deleted {name}")
+        return 0
+
+    if action == "save":
+        catalog.rescan(config.scan_dirs, game.mods)
+        saved = profiles.capture(name, catalog.mods)
+        store.put(saved)
+        store.save()
+        print(f"Saved {saved.name}: {saved.size} mod(s)")
+        return 0
+
+    wanted = store.get(name)
+    if wanted is None:
+        print(
+            f"No profile called {name}. Known: {', '.join(store.names) or 'none'}",
+            file=sys.stderr,
+        )
+        return 1
+    catalog.rescan(config.scan_dirs, game.mods)
+    result = profiles.apply(wanted, catalog.mods, game.mods)
+    catalog.save()
+    print(f"{wanted.name}: {result.summary}")
+    for line in result.problems:
+        print(f"  {line}", file=sys.stderr)
+    for slug in result.missing:
+        print(f"  missing from the library: {slug}", file=sys.stderr)
+    return 0
+
+
+def _reset(scopes: list[str], confirmed: bool, config: Config) -> int:
+    """List what a reset would remove, and remove it only when told to.
+
+    The listing is the default because the scopes differ in cost. Unlinking is
+    reversible in a second; dropping the library means downloading a collection
+    again, so "all" leaves it alone and the user has to name it.
+    """
+    from .catalog import Catalog
+    from .paths import GameNotFound, discover_game
+
+    if not scopes:
+        print("Say what to reset. Scopes:\n")
+        for scope in SCOPES:
+            mark = "  (not in 'all')" if scope in maintenance.DESTRUCTIVE else ""
+            print(f"  {scope:<12} {maintenance.DESCRIPTIONS[scope]}{mark}")
+        print("\n  all          everything above except the library")
+        print("\nAdd --yes to carry it out. Example: regalia reset links store --yes")
+        return 0
+
+    if "all" in scopes:
+        scopes = [scope for scope in SCOPES if scope not in maintenance.DESTRUCTIVE]
+
+    mods_dir = None
+    try:
+        mods_dir = discover_game(config.game_root).mods
+    except GameNotFound:
+        pass
+
+    catalog = Catalog.load()
+    claimed = {name for mod in catalog.mods for name in mod.all_files}
+
+    try:
+        todo = maintenance.plan(scopes, mods_dir, claimed)
+    except ValueError as error:
+        print(error, file=sys.stderr)
+        return 2
+
+    if todo.is_empty:
+        print("Nothing to remove.")
+        return 0
+
+    for scope, items in todo.by_scope().items():
+        size = maintenance.human(sum(item.bytes for item in items))
+        print(f"{scope:<12} {len(items):>5} item(s)  {size:>10}")
+        print(f"             {maintenance.DESCRIPTIONS[scope]}")
+    print(f"\ntotal: {todo.count} item(s), {maintenance.human(todo.bytes)}")
+
+    if not confirmed:
+        print("\nNothing was removed. Add --yes to carry this out.")
+        return 0
+
+    for line in maintenance.run(todo):
+        print(line)
     return 0
 
 
@@ -205,7 +380,7 @@ def main() -> int:
     config = _config_from(args)
 
     # Everything except the reports needs to be able to open an archive.
-    if args.command not in ("doctor", "status"):
+    if args.command not in ("doctor", "status", "reset"):
         try:
             require_extractor()
         except NoExtractor as error:
@@ -214,6 +389,12 @@ def main() -> int:
 
     if args.command == "nxm":
         return _handle_nxm(args.url, config)
+    if args.command == "import":
+        return _import(args.paths, args.move, config)
+    if args.command == "reset":
+        return _reset(args.scopes, args.yes, config)
+    if args.command == "profile":
+        return _profile(args.action, args.name, config)
     if args.command == "register-nxm":
         from . import nxm
 

@@ -4,13 +4,16 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections import Counter
 from pathlib import Path
 
-from . import archive, naming
-from .model import Mod, NexusInfo, State
+from . import archive, components, heroes, installer, iostore, library, naming
+from .model import Component, Mod, NexusInfo, State
 from .paths import CATALOG_FILE, DATA_DIR, STORE_DIR
 
-CATALOG_VERSION = 2
+# 3 replaced the flat "files" list with components, so one archive can hold
+# several pak sets and only the chosen ones are linked.
+CATALOG_VERSION = 3
 
 
 class Catalog:
@@ -57,7 +60,14 @@ class Catalog:
         found: list[Mod] = []
         self.patch_archive = None
 
-        for path in archive.find_archives(scan_dirs):
+        roots = library.roots(scan_dirs)
+        for path in archive.find_unsupported(roots):
+            log.append(
+                f"skipped: {path.name} — {path.suffix} archives cannot be opened; "
+                "repack it as .zip or .7z"
+            )
+
+        for path in archive.find_archives(roots):
             entries = archive.list_entries(path)
             if not entries:
                 log.append(f"unreadable: {path.name}")
@@ -71,6 +81,7 @@ class Catalog:
             parsed = naming.parse(path.name)
             slug = self._unique_slug(parsed, path, claimed)
             files = archive.mod_files(entries)
+            listed = components.from_entries(entries)
 
             # An archive is identified by its path, not by its slug. Two files
             # can describe the same hero, variant and version, and keying the
@@ -93,24 +104,166 @@ class Catalog:
             mod.nexus_id = parsed.nexus_id
             mod.size = sum(entry.size for entry in files)
 
-            if not files:
+            if not listed:
                 mod.state = State.UNSUPPORTED
                 mod.note = "no .pak file inside"
                 log.append(f"unsupported: {path.name} — no .pak inside")
             else:
-                mod.files = [Path(entry.name).name for entry in files]
+                # The extracted copy is the better source: it says what each
+                # container actually claims, which the archive listing cannot.
+                # The listing is all there is until the mod is installed.
+                store = STORE_DIR / slug
+                on_disk = components.discover(store) if store.is_dir() else []
+                if note := self._adopt(mod, on_disk or listed):
+                    log.append(f"{mod.title}: {note}")
                 # The inner pak name decides load order, not the archive name.
                 mod.has_load_order = any(
-                    naming.LOAD_ORDER_SUFFIX.search(name) for name in mod.files
+                    naming.LOAD_ORDER_SUFFIX.search(item.stem)
+                    for item in mod.components
                 )
                 if mod.state is State.UNSUPPORTED:
                     mod.state = State.AVAILABLE
 
             found.append(mod)
 
+        found += self._keep_orphans(previous, {mod.source for mod in found}, log)
+        if named := self._name_from_containers(found):
+            log.append(f"named {named} mod(s) from the character in their pak")
         self.mods = sorted(found, key=lambda m: (m.hero, m.variant))
         log += self.verify(mods_dir)
         return log
+
+    @staticmethod
+    def _keep_orphans(
+        previous: dict[Path, Mod], seen: set[Path], log: list[str]
+    ) -> list[Mod]:
+        """Hold on to installed mods whose archive is no longer where it was.
+
+        Dropping the record would leave the extracted files and the game links
+        with nothing that admits to owning them, and the user with a mod they
+        cannot uninstall from the tool that installed it. The mod keeps working;
+        only re-identifying it needs the archive back.
+        """
+        kept: list[Mod] = []
+        for source, mod in previous.items():
+            if source in seen or source.exists():
+                continue
+            if not (STORE_DIR / mod.slug).is_dir():
+                continue
+            mod.note = f"archive missing from {source.parent}"
+            kept.append(mod)
+        if kept:
+            log.append(f"{len(kept)} installed mod(s) kept though the archive is gone")
+        return kept
+
+    @staticmethod
+    def _name_from_containers(mods: list[Mod]) -> int:
+        """Give a hero to mods whose file name never said which one.
+
+        The pak knows. Its asset paths carry the character id, and a mod that
+        was named some other way teaches the tool which hero that id belongs to.
+        Mod authors name files freely — "PANTS-4245-1-0.7z" says nothing — so a
+        third of a real library can arrive as "Unknown", and an unknown hero
+        loses its grouping and its warnings.
+
+        Only an unambiguous answer is used. A pak touching two characters says
+        nothing about which one the mod is *for*.
+        """
+        # Learn by majority, not by first seen. One mis-parsed file name would
+        # otherwise teach a character the wrong hero, and because the container
+        # then overrules the file name, that one mistake would rename every
+        # other mod for the same character.
+        votes: dict[str, Counter[str]] = {}
+        for mod in mods:
+            characters = _characters_of(mod)
+            if len(characters) != 1 or not _named_by_parser(mod.hero):
+                continue
+            votes.setdefault(next(iter(characters)), Counter())[mod.hero] += 1
+        heroes.learn_characters(
+            {
+                character: tally.most_common(1)[0][0]
+                for character, tally in votes.items()
+            }
+        )
+
+        named = 0
+        for mod in mods:
+            characters = _characters_of(mod)
+            if len(characters) != 1:
+                # Nothing unambiguous to go on. A pak touching two characters
+                # does not say which one the mod is *for*.
+                continue
+            character = next(iter(characters))
+            hero = heroes.hero_for_character(character)
+
+            if hero == heroes.UNKNOWN:
+                if not _named_by_parser(mod.hero):
+                    # The table has not met this character — the game adds one
+                    # every season. Its id still beats "Unknown": mods for one
+                    # character group together and warn about each other, and
+                    # the id is what goes in heroes.toml to name it.
+                    mod.hero = f"Character {character}"
+                    mod.note = mod.note or f"unnamed character {character}"
+                continue
+
+            if mod.hero != hero:
+                # The container wins. A file name is what the author felt like
+                # typing and the parser reads it hopefully — "Fishnet
+                # Stockings" and "one.7z" carry no hero at all, and a name that
+                # merely contains "cap" is not proof of Captain America. The
+                # asset path states the character as fact.
+                mod.hero = hero
+                named += 1
+
+        Catalog._name_costumes(mods)
+        return named
+
+    @staticmethod
+    def _name_costumes(mods: list[Mod]) -> None:
+        """Work out what each costume is called, from what mods call it.
+
+        The game holds the real names, and they cannot be reached: its pak index
+        is encrypted and its entries are Oodle compressed. The library can be
+        read though, and authors lead a file name with the costume more often
+        than not — three separate Blade mods all begin "BladeKnight" — so the
+        first word of the variant, agreed on by several mods, names it well
+        enough to be worth showing.
+        """
+        votes: dict[str, list[str]] = {}
+        for mod in mods:
+            costumes = _costumes_of(mod)
+            if len(costumes) != 1:
+                continue
+            first = mod.display_variant.split("·")[0].strip()
+            if first:
+                votes.setdefault(next(iter(costumes)), []).append(first)
+        heroes.learn_costumes(votes)
+
+    @staticmethod
+    def _adopt(mod: Mod, found: list[Component]) -> str:
+        """Refresh the component list, keeping the user's choices where valid.
+
+        Returns a note when the selection had to be repaired. A catalog written
+        before components existed says every pak set is on, because that is what
+        the old installer did — it linked all of them. Left alone that hands the
+        game ten claims on one mesh, so an unresolvable selection is narrowed
+        here and the caller reports it.
+        """
+        remembered = {(item.folder, item.stem): item.enabled for item in mod.components}
+        for item in found:
+            if (item.folder, item.stem) in remembered:
+                item.enabled = remembered[(item.folder, item.stem)]
+
+        if not remembered:
+            components.choose_default(found)
+            mod.components = found
+            return ""
+
+        dropped = components.resolve(found)
+        mod.components = found
+        if dropped:
+            return f"turned off {len(dropped)} option(s) that overwrote the one kept"
+        return ""
 
     @staticmethod
     def _unique_slug(
@@ -147,8 +300,16 @@ class Catalog:
                 continue
             store = STORE_DIR / mod.slug
             extracted = store.is_dir() and any(store.iterdir())
-            linked = extracted and all(
-                (mods_dir / name).is_symlink() for name in mod.files
+            # A mod with every option switched off holds no names in the game
+            # folder. That is disabled, not installed, and "all of nothing is
+            # true" would otherwise call it installed.
+            # By target, not by name. A name alone proves nothing: two archives
+            # can ship a container with the same stem, only one of them owns the
+            # link, and asking whether *a* link exists called both installed.
+            linked = (
+                extracted
+                and bool(mod.files)
+                and set(mod.files) <= installer.linked_names(mod, mods_dir)
             )
 
             if not extracted:
@@ -300,3 +461,34 @@ class Catalog:
     @property
     def installed_count(self) -> int:
         return sum(1 for mod in self.mods if mod.state is State.INSTALLED)
+
+
+def _named_by_parser(hero: str) -> bool:
+    """Whether a hero name came from a real match rather than a fallback.
+
+    "Unknown" and "Character 1037" are both placeholders. Treating either as
+    evidence would have the tool teach itself its own guesses.
+    """
+    return hero != heroes.UNKNOWN and not hero.startswith("Character ")
+
+
+def _costumes_of(mod: Mod) -> set[str]:
+    """Every costume id the mod's containers write to."""
+    found: set[str] = set()
+    for component in mod.components:
+        for asset in component.assets:
+            for match in iostore.CHARACTER_SKIN.finditer(asset):
+                if match.group(1) == match.group(2):
+                    found.add(match.group(2) + match.group(3))
+    return found
+
+
+def _characters_of(mod: Mod) -> set[str]:
+    """Every character id the mod's containers write to."""
+    found: set[str] = set()
+    for component in mod.components:
+        for asset in component.assets:
+            for match in iostore.CHARACTER_SKIN.finditer(asset):
+                if match.group(1) == match.group(2):
+                    found.add(match.group(1))
+    return found

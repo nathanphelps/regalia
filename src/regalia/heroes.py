@@ -7,10 +7,11 @@ adds a hero every season and an unknown hero loses its conflict warnings.
 
 from __future__ import annotations
 
+import json
 import tomllib
 from pathlib import Path
 
-from .paths import CONFIG_DIR
+from .paths import CONFIG_DIR, DATA_DIR
 
 # Canonical name -> extra spellings seen in the wild. Mod authors drop spaces,
 # abbreviate, and use MCU names, so one hero needs several aliases.
@@ -208,3 +209,232 @@ def find_hero(text: str) -> tuple[str, str] | None:
         if alias_key and alias_key in haystack:
             return canonical, alias_key
     return None
+
+
+# -- character ids, learned from the library -----------------------------
+#
+# A container states which character it changes: the asset paths carry a
+# four-digit id. Nothing ships that maps those ids to names, and a shipped table
+# would go stale every season, so the tool works it out from mods it has already
+# named and remembers the answer. A file whose name says nothing then still
+# reports the right hero, because the pak inside it does.
+
+UNKNOWN = "Unknown"
+
+CHARACTERS_FILE = DATA_DIR / "characters.json"
+
+_learned: dict[str, str] | None = None
+
+
+def learned_characters() -> dict[str, str]:
+    """The character id to hero name map worked out so far."""
+    global _learned
+    if _learned is None:
+        try:
+            _learned = {
+                str(key): str(value)
+                for key, value in json.loads(CHARACTERS_FILE.read_text()).items()
+            }
+        except (OSError, ValueError, AttributeError):
+            _learned = {}
+    return dict(_learned)
+
+
+def learn_characters(pairs: dict[str, str]) -> int:
+    """Record character ids seen alongside a known hero. Returns what is new.
+
+    An id already known is left alone. The first confident answer wins, because
+    a later disagreement is far more likely to be a mis-parsed file name than a
+    character changing identity.
+    """
+    global _learned
+    known = learned_characters()
+    fresh = {
+        character: hero
+        for character, hero in pairs.items()
+        if character not in known and hero and hero != UNKNOWN
+    }
+    if not fresh:
+        return 0
+
+    known.update(fresh)
+    _learned = known
+    try:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        CHARACTERS_FILE.write_text(json.dumps(known, indent=2, sort_keys=True) + "\n")
+    except OSError:
+        # Losing the file costs a re-learn on the next scan, which is cheap.
+        # Failing the scan over it is not.
+        pass
+    return len(fresh)
+
+
+def hero_for_character(character: str) -> str:
+    """The hero a character id belongs to, or "Unknown"."""
+    return learned_characters().get(character, UNKNOWN)
+
+
+def forget_characters() -> None:
+    """Drop the cache so the next read comes from disk. Used by the tests."""
+    global _learned
+    _learned = None
+
+
+# -- costume names -------------------------------------------------------
+#
+# The game knows these, in ".locres" files inside its own paks. Those cannot be
+# read: the pak index is AES encrypted and the entries are Oodle compressed, so
+# reaching them needs the publisher's key and a proprietary decompressor. Both
+# are outside what this project can ship.
+#
+# What can be read is the library itself. Mod authors lead a file name with the
+# costume far more often than not — three separate Blade mods all begin
+# "BladeKnight" — so the first word of the parsed variant, agreed on by several
+# mods for one costume, is a good name for it. A costume the tool works out this
+# way is a guess from names, which is why it takes a vote and why the user can
+# overrule it in costumes.toml.
+
+COSTUMES_FILE = DATA_DIR / "costumes.json"
+COSTUME_OVERLAY_FILE = CONFIG_DIR / "costumes.toml"
+
+# The default costume is the one the game ships the character in. Its id always
+# ends "001", so it needs no guessing and no vote.
+DEFAULT_SUFFIX = "001"
+
+# Words that describe what a mod does to a costume rather than naming one.
+COSTUME_NOISE: frozenset[str] = frozenset(
+    {
+        "addon",
+        "addin",
+        "retexture",
+        "remove",
+        "nude",
+        "thicc",
+        "skimpy",
+        "sexy",
+        "muscular",
+        "body",
+        "bodyhair",
+        "oily",
+        "thong",
+        "jockstrap",
+        "briefs",
+        "beard",
+        "hair",
+        "aroused",
+        "erect",
+        "flaccid",
+        "physics",
+        "fix",
+        "main",
+        "version",
+        "new",
+        "old",
+        "updated",
+        "no",
+        "the",
+    }
+)
+
+_costumes: dict[str, str] | None = None
+
+
+def _costume_overlay() -> dict[str, str]:
+    if not COSTUME_OVERLAY_FILE.is_file():
+        return {}
+    try:
+        data = tomllib.loads(COSTUME_OVERLAY_FILE.read_text())
+    except (OSError, tomllib.TOMLDecodeError):
+        return {}
+    section = data.get("costumes", data)
+    if not isinstance(section, dict):
+        return {}
+    return {str(key): str(value) for key, value in section.items()}
+
+
+def learned_costumes() -> dict[str, str]:
+    """Costume id to name, with anything the user wrote taking priority."""
+    global _costumes
+    if _costumes is None:
+        try:
+            found = {
+                str(key): str(value)
+                for key, value in json.loads(COSTUMES_FILE.read_text()).items()
+            }
+        except (OSError, ValueError, AttributeError):
+            found = {}
+        found.update(_costume_overlay())
+        _costumes = found
+    return dict(_costumes)
+
+
+def is_costume_name(word: str) -> bool:
+    """Whether a word could be naming a costume rather than describing a change."""
+    cleaned = word.strip()
+    return (
+        len(cleaned) > 2
+        and not cleaned.isdigit()
+        and cleaned.lower() not in COSTUME_NOISE
+        and cleaned.lower() not in NOISE_WORDS
+    )
+
+
+def learn_costumes(votes: dict[str, list[str]], agree: int = 2) -> int:
+    """Record costume names that several mods agree on. Returns what is new.
+
+    A vote rather than a first answer, because this reads a file name and file
+    names are wrong often enough to matter. One mod calling a costume "Skimpy
+    outfit" should not name it for every other mod that shares it.
+    """
+    global _costumes
+    known = learned_costumes()
+    fresh: dict[str, str] = {}
+
+    for costume, names in votes.items():
+        if costume in known:
+            continue
+        if costume.endswith(DEFAULT_SUFFIX):
+            fresh[costume] = "Default"
+            continue
+        tally: dict[str, int] = {}
+        for name in names:
+            if is_costume_name(name):
+                tally[name] = tally.get(name, 0) + 1
+        if not tally:
+            continue
+        best, count = max(tally.items(), key=lambda pair: pair[1])
+        if count >= agree:
+            fresh[costume] = best
+
+    if not fresh:
+        return 0
+
+    known.update(fresh)
+    _costumes = known
+    try:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        # Only what was worked out. Anything the user wrote stays in their file,
+        # so a rewrite here can never quietly bake their wording into ours.
+        overlay = _costume_overlay()
+        COSTUMES_FILE.write_text(
+            json.dumps(
+                {key: value for key, value in known.items() if key not in overlay},
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n"
+        )
+    except OSError:
+        pass
+    return len(fresh)
+
+
+def costume_name(costume: str) -> str:
+    """The costume's name, or its id when nothing has named it yet."""
+    return learned_costumes().get(costume, costume)
+
+
+def forget_costumes() -> None:
+    """Drop the cache so the next read comes from disk. Used by the tests."""
+    global _costumes
+    _costumes = None
