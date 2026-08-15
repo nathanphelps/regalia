@@ -252,3 +252,60 @@ def test_unlinking_leaves_a_name_another_mod_took_over(tmp_path, monkeypatch):
 
     # The winner keeps its links: removing them would uninstall it silently.
     assert installer.linked_names(winner, mods_dir) == set(winner.files)
+
+
+def test_deleting_a_mod_removes_its_archive_from_the_library(tmp_path, monkeypatch):
+    """Uninstalling keeps the archive, so the mod returns on the next scan.
+
+    That is right nine times out of ten and wrong when the user has decided a
+    mod is not for them, which is what this covers.
+    """
+    from regalia import library
+
+    store = tmp_path / "store"
+    mods_dir = tmp_path / "~mods"
+    mods_dir.mkdir()
+    lib = tmp_path / "library"
+    lib.mkdir()
+    monkeypatch.setattr(installer, "STORE_DIR", store)
+    monkeypatch.setattr(library, "LIBRARY_DIR", lib)
+
+    archive_file = lib / "mod.zip"
+    archive_file.write_bytes(b"archive")
+    mod = make_mod([part("A")])
+    mod.source = archive_file
+    mod.components[0].enabled = True
+    (store / mod.slug).mkdir(parents=True)
+    for name in mod.components[0].names:
+        (store / mod.slug / name).write_bytes(b"")
+    installer.link(mod, mods_dir)
+
+    assert installer.discard(mod, mods_dir)
+    assert not archive_file.exists()
+    assert not (store / mod.slug).exists()
+    assert list(mods_dir.iterdir()) == []
+
+
+def test_an_archive_the_user_keeps_elsewhere_is_left_alone(tmp_path, monkeypatch):
+    # A watched folder belongs to the user. Deleting from it because they
+    # uninstalled a mod would be a surprise.
+    from regalia import library
+
+    store = tmp_path / "store"
+    mods_dir = tmp_path / "~mods"
+    mods_dir.mkdir()
+    monkeypatch.setattr(installer, "STORE_DIR", store)
+    monkeypatch.setattr(library, "LIBRARY_DIR", tmp_path / "library")
+
+    theirs = tmp_path / "downloads"
+    theirs.mkdir()
+    archive_file = theirs / "mod.zip"
+    archive_file.write_bytes(b"archive")
+    mod = make_mod([part("A")])
+    mod.source = archive_file
+    (store / mod.slug).mkdir(parents=True)
+
+    assert not installer.discard(mod, mods_dir)
+    assert archive_file.exists()
+    # The extracted copy still goes; only the file they own is spared.
+    assert not (store / mod.slug).exists()

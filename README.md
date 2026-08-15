@@ -155,7 +155,8 @@ Regalia reads the Steam config to check this, and can set it for you. See
 | `i` | install |
 | `d` | disable — remove the links, keep the files |
 | `e` | enable |
-| `x` | remove — delete the extracted files as well |
+| `x` | remove — delete the extracted files, keep the archive |
+| `X` | delete from the library — the archive goes too |
 | `p` | choose which parts of a mod run |
 | `f` | profiles — save or switch a whole set of mods |
 | `r` | rescan the folders |
@@ -255,6 +256,17 @@ Hulk = ["banner"]              # adds to the built-in aliases, does not replace
 A new key adds a hero. An existing key unions its aliases with the built-in
 ones. `regalia doctor` reports how many the overlay adds.
 
+Costume names work the same way. The game keeps them in files Regalia cannot
+read — the pak index is encrypted and the entries use a proprietary compressor —
+so instead it learns them from your library: when two or more mods for one
+costume start their name the same way, that is what the costume is called.
+Correct one in `~/.config/regalia/costumes.toml`:
+
+```toml
+[costumes]
+"1044800" = "Blade Knight"
+```
+
 ## Where things live
 
 | Path | Holds |
@@ -262,11 +274,13 @@ ones. `regalia doctor` reports how many the overlay adds.
 | `~/.config/regalia/config.toml` | game path, extra watch folders, theme |
 | `~/.config/regalia/credentials.toml` | the Nexus key, mode 0600 |
 | `~/.config/regalia/heroes.toml` | your extra heroes and aliases |
+| `~/.config/regalia/costumes.toml` | your costume names, overriding the learned ones |
 | `~/.local/share/regalia/library/` | the archives Regalia owns; downloads land here |
 | `~/.local/share/regalia/store/` | extracted mod files, in the archive's own folders |
 | `~/.local/share/regalia/catalog.json` | known mods and their state |
 | `~/.local/share/regalia/profiles.json` | saved sets of mods |
 | `~/.local/share/regalia/characters.json` | character ids the tool has learned |
+| `~/.local/share/regalia/costumes.json` | costume names the tool has learned |
 | `~/.local/share/regalia/backups/` | Steam config backups |
 | `~/.cache/regalia/images/` | Nexus artwork |
 | `<game>/…/Content/Paks/~mods/` | symlinks only |
@@ -332,6 +346,9 @@ you add `--yes`:
 | `config` | the settings file |
 | `library` | the archives Regalia imported |
 | `all` | everything above **except** the library |
+
+The desktop offers the same under **Settings → Start over**, including deleting
+the archives, and each button says what it costs to undo.
 
 `all` leaves the library alone on purpose: re-downloading a large collection is
 the one cost that cannot be undone cheaply. Name `library` explicitly if you

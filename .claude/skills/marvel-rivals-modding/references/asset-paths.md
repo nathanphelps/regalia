@@ -61,10 +61,37 @@ Reject internal names rather than showing them: anything starting with `[`,
 containing `recolor`, starting with `placeholder`, or ending in `**`. Those are
 developer placeholders and look like corruption to a user.
 
-Reading locres needs a locres parser and the ability to unpack a base game pak,
-which is a much heavier dependency than reading a mod's own `.utoc` directory
-index. A static ID-to-hero table is a reasonable substitute; a static
-ID-to-costume table is not, because costumes ship every season.
+### Why reading them is blocked
+
+Measured on a current install, not assumed. The strings live in
+`pakchunkLocres-Windows.pak` — a classic pak, version 11, whose `.ucas` beside
+it is an empty 48 bytes. Its footer says:
+
+- `bEncryptedIndex: 1` — the index is AES encrypted, so even listing the
+  contents needs the publisher's key.
+- compression method `Oodle` — the entries are compressed with Rad Game Tools'
+  library, which is proprietary and not redistributable.
+
+Every other game container is worse: flags 15, meaning Compressed, Encrypted,
+Signed and Indexed together. Only `pakchunkLocres-Windows.utoc` is unencrypted,
+and it holds one chunk and no data.
+
+So a tool that ships no key and no Oodle binary cannot read costume names from
+the game. Say so rather than half-building it. The two things that would unblock
+it are a user-supplied AES key and an Oodle decompressor, in that order.
+
+### What works instead
+
+Learn them from the library. Authors lead a file name with the costume far more
+often than not — three separate Blade mods all begin "BladeKnight" — so the
+first word of a parsed variant, agreed on by two or more mods that touch the
+same costume id, names it well. On a 182-archive library that recovers fifteen
+real costume names: Freefall, BloodMoon, Thunderbolts, Magus, Wedding, LNY.
+
+Take a vote and let the user overrule it. This reads a file name, and file names
+are wrong often enough that one mod calling a costume "Skimpy outfit" must not
+name it for everyone. Anything ending `001` is the default costume and needs no
+vote at all.
 
 ## Classifying a pak set
 

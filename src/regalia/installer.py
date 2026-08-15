@@ -194,10 +194,27 @@ def apply_selection(mod: Mod, mods_dir: Path) -> None:
 
 
 def remove(mod: Mod, mods_dir: Path) -> None:
-    """Remove the links and the store copy."""
+    """Remove the links and the store copy. The archive is kept."""
     unlink(mod, mods_dir)
     shutil.rmtree(store_dir(mod), ignore_errors=True)
     mod.state = State.AVAILABLE
+
+
+def discard(mod: Mod, mods_dir: Path) -> bool:
+    """Remove the mod and delete its archive, so it is gone for good.
+
+    `remove` frees the extracted files and leaves the archive, so the mod comes
+    back on the next scan — which is what a user wants nine times out of ten and
+    is not what they want when they have decided a mod is not for them. Without
+    this there is no way to say so, short of finding the file by hand.
+
+    Returns whether the archive went. An archive in a folder the user watches
+    rather than in the library is theirs, and is left alone.
+    """
+    from . import library
+
+    remove(mod, mods_dir)
+    return library.forget(mod.source)
 
 
 def repair(mods: list[Mod], mods_dir: Path) -> int:

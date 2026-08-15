@@ -114,6 +114,23 @@ def import_all(sources: list[Path], move: bool = False) -> list[str]:
     return log
 
 
+def forget(path: Path) -> bool:
+    """Delete an archive from the library. Returns whether it went.
+
+    Only a file the library owns. An archive the user keeps in a watched folder
+    of their own is theirs, and deleting it because they uninstalled a mod would
+    be a surprise — uninstalling is about the game folder, not about their
+    downloads.
+    """
+    if not holds(path):
+        return False
+    try:
+        path.unlink()
+    except OSError:
+        return False
+    return True
+
+
 def size() -> tuple[int, int]:
     """How many archives the library holds, and how many bytes."""
     if not LIBRARY_DIR.is_dir():

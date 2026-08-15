@@ -26,7 +26,7 @@ COLLECTION_URL = "https://next.nexusmods.com/marvelrivals/collections/{slug}"
 # checked before the application's, so they are claimed here and made to do
 # nothing. Without this, pressing "x" on a detail screen would remove whatever
 # the library cursor happened to be sitting on.
-SHADOWED = ("i", "e", "x", "r", "n", "u", "c", "p", "f", "slash", "space")
+SHADOWED = ("i", "e", "x", "X", "r", "n", "u", "c", "p", "f", "slash", "space")
 
 
 def _shadow() -> list[Binding]:

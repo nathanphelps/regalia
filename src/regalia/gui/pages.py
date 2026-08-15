@@ -510,6 +510,7 @@ class LibraryPage(QWidget):
                 ("Disable", self.disable),
                 ("Uninstall", self.remove),
                 ("Repair", self.repair),
+                ("Delete from library", self.discard),
                 ("Open Nexus", self.open_selected_nexus),
             )
         ):
@@ -944,6 +945,64 @@ class LibraryPage(QWidget):
                 lambda mod, game: installer.remove(mod, game.mods),
                 mods,
             )
+
+    def discard(self) -> None:
+        """Uninstall and delete the archive, so the mod does not come back.
+
+        Uninstalling leaves the archive, so the next scan finds it again. That
+        is right nine times out of ten and wrong when the user has decided a mod
+        is not for them, and there was no way to say so from here.
+        """
+        mods = self.selected_mods()
+        if not mods:
+            return
+        held = [mod for mod in mods if library.holds(mod.source)]
+        elsewhere = len(mods) - len(held)
+
+        lines = [f"Delete {len(mods)} mod(s) and their extracted files."]
+        if held:
+            lines.append(
+                f"{len(held)} archive(s) in the library will be deleted too. "
+                "Getting them back means downloading them again."
+            )
+        if elsewhere:
+            lines.append(
+                f"{elsewhere} archive(s) live in a folder you watch rather than "
+                "in the library. Those files are left alone, so the mod will "
+                "come back on the next scan."
+            )
+        answer = QMessageBox.warning(
+            self,
+            "Delete from library",
+            "\n\n".join(lines),
+            QMessageBox.StandardButton.Cancel | QMessageBox.StandardButton.Ok,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if answer != QMessageBox.StandardButton.Ok:
+            return
+
+        game = self._require_game()
+        if not game:
+            return
+
+        def work(progress):
+            gone = 0
+            for index, mod in enumerate(mods, 1):
+                progress(int((index - 1) / len(mods) * 100), mod.title)
+                if installer.discard(mod, game.mods):
+                    gone += 1
+            self.context.catalog.rescan(self.context.config.scan_dirs, game.mods)
+            self.context.catalog.save()
+            return gone
+
+        self.context.tasks.submit(
+            "Delete from library",
+            work,
+            on_result=lambda gone: self._action_done(
+                f"Deleted {len(mods)} mod(s), {gone} archive(s) removed"
+            ),
+            on_error=lambda message, trace: self.context.notify(message, True),
+        )
 
     def repair(self) -> None:
         game = self._require_game()

@@ -214,7 +214,30 @@ class Catalog:
                 # asset path states the character as fact.
                 mod.hero = hero
                 named += 1
+
+        Catalog._name_costumes(mods)
         return named
+
+    @staticmethod
+    def _name_costumes(mods: list[Mod]) -> None:
+        """Work out what each costume is called, from what mods call it.
+
+        The game holds the real names, and they cannot be reached: its pak index
+        is encrypted and its entries are Oodle compressed. The library can be
+        read though, and authors lead a file name with the costume more often
+        than not — three separate Blade mods all begin "BladeKnight" — so the
+        first word of the variant, agreed on by several mods, names it well
+        enough to be worth showing.
+        """
+        votes: dict[str, list[str]] = {}
+        for mod in mods:
+            costumes = _costumes_of(mod)
+            if len(costumes) != 1:
+                continue
+            first = mod.display_variant.split("·")[0].strip()
+            if first:
+                votes.setdefault(next(iter(costumes)), []).append(first)
+        heroes.learn_costumes(votes)
 
     @staticmethod
     def _adopt(mod: Mod, found: list[Component]) -> str:
@@ -447,6 +470,17 @@ def _named_by_parser(hero: str) -> bool:
     evidence would have the tool teach itself its own guesses.
     """
     return hero != heroes.UNKNOWN and not hero.startswith("Character ")
+
+
+def _costumes_of(mod: Mod) -> set[str]:
+    """Every costume id the mod's containers write to."""
+    found: set[str] = set()
+    for component in mod.components:
+        for asset in component.assets:
+            for match in iostore.CHARACTER_SKIN.finditer(asset):
+                if match.group(1) == match.group(2):
+                    found.add(match.group(2) + match.group(3))
+    return found
 
 
 def _characters_of(mod: Mod) -> set[str]:

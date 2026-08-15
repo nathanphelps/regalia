@@ -116,6 +116,7 @@ class RegaliaApp(App[None]):
         ("d", "disable", "disable"),
         ("e", "enable", "enable"),
         ("x", "remove", "remove"),
+        ("X", "discard", "delete file"),
         ("p", "parts", "parts"),
         ("f", "profiles", "profiles"),
         ("r", "rescan", "rescan"),
@@ -803,6 +804,41 @@ class RegaliaApp(App[None]):
             installer.remove(mod, self.game.mods)
             self.log_line(f"[red]removed[/] {mod.title}")
         self._finish_batch(f"removed {len(mods)} mod(s)")
+
+    def action_discard(self) -> None:
+        """Uninstall and delete the archive, so the mod does not come back."""
+        if self.game is None:
+            return
+        pending = self.targets()
+        if not pending:
+            return
+        held = sum(1 for mod in pending if library.holds(mod.source))
+        body = (
+            f"Delete {len(pending)} mod(s), their extracted files, and "
+            f"{held} archive(s) from the library.\n\n"
+            "Getting the archives back means downloading them again."
+        )
+        self.push_screen(
+            ConfirmScreen("Delete from library", body, "Delete"),
+            lambda ok: self._discard(pending) if ok else None,
+        )
+
+    def _discard(self, mods: list[Mod]) -> None:
+        assert self.game is not None
+        gone = 0
+        for mod in mods:
+            try:
+                if installer.discard(mod, self.game.mods):
+                    gone += 1
+                self.log_line(f"[red]deleted[/] {mod.title}")
+            except OSError as error:
+                self.log_line(f"[red]failed[/] {mod.title}: {error}")
+        self.catalog.rescan(self.config.scan_dirs, self.game.mods)
+        self.warnings = conflicts.check(self.catalog.mods)
+        self.catalog.save()
+        self.selected.clear()
+        self.refresh_table()
+        self.notify(f"deleted {len(mods)} mod(s), {gone} archive(s) removed")
 
     def action_repair(self) -> None:
         if self.game is None:

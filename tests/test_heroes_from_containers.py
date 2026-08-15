@@ -106,3 +106,63 @@ def test_a_mod_with_no_character_assets_is_left_alone():
     Catalog._name_from_containers([nameless])
 
     assert nameless.hero == "Unknown"
+
+
+# -- costume names -------------------------------------------------------
+
+
+@pytest.fixture
+def costume_store(tmp_path, monkeypatch):
+    monkeypatch.setattr(heroes, "COSTUMES_FILE", tmp_path / "costumes.json")
+    monkeypatch.setattr(heroes, "COSTUME_OVERLAY_FILE", tmp_path / "costumes.toml")
+    monkeypatch.setattr(heroes, "DATA_DIR", tmp_path)
+    heroes.forget_costumes()
+    yield tmp_path
+    heroes.forget_costumes()
+
+
+def test_a_costume_several_mods_agree_on_is_named(costume_store):
+    heroes.learn_costumes({"1044800": ["BladeKnight", "BladeKnight", "Thong"]})
+
+    assert heroes.costume_name("1044800") == "BladeKnight"
+
+
+def test_one_mod_alone_does_not_name_a_costume(costume_store):
+    # File names are wrong often enough that a single voice must not decide.
+    heroes.learn_costumes({"1044800": ["Skimpy outfit"]})
+
+    assert heroes.costume_name("1044800") == "1044800"
+
+
+def test_the_default_costume_needs_no_vote(costume_store):
+    # Its id always ends 001, so the game already told us.
+    heroes.learn_costumes({"1026001": []})
+
+    assert heroes.costume_name("1026001") == "Default"
+
+
+def test_words_describing_a_change_are_not_costume_names(costume_store):
+    heroes.learn_costumes({"1044800": ["Oily", "Oily", "Thong", "Thong"]})
+
+    assert heroes.costume_name("1044800") == "1044800"
+
+
+def test_what_the_user_wrote_wins(costume_store):
+    (costume_store / "costumes.toml").write_text(
+        '[costumes]\n"1044800" = "Blade Knight"\n'
+    )
+    heroes.forget_costumes()
+    heroes.learn_costumes({"1044800": ["BladeKnight", "BladeKnight"]})
+
+    assert heroes.costume_name("1044800") == "Blade Knight"
+
+
+def test_a_learned_name_survives_a_restart(costume_store):
+    heroes.learn_costumes({"1021501": ["Freefall", "Freefall"]})
+    heroes.forget_costumes()
+
+    assert heroes.costume_name("1021501") == "Freefall"
+
+
+def test_an_unnamed_costume_reports_its_id(costume_store):
+    assert heroes.costume_name("9999999") == "9999999"

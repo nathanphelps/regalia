@@ -214,7 +214,11 @@ def _describe(shared: set[str]) -> str:
         named = []
         for skin in sorted(skins)[:3]:
             hero = heroes.hero_for_character(skin[:4])
-            named.append(f"{hero} costume {skin}" if hero != heroes.UNKNOWN else skin)
+            costume = heroes.costume_name(skin)
+            who = "" if hero == heroes.UNKNOWN else f"{hero}'s "
+            named.append(
+                f"{who}{costume}" if costume != skin else f"{who}costume {skin}"
+            )
         listed = ", ".join(named)
         extra = "" if len(skins) <= 3 else f" and {len(skins) - 3} more"
         return f"{listed}{extra}"

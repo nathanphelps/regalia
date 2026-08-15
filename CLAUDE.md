@@ -174,6 +174,19 @@ and `heroes` holds the alias table that makes it work. Mod authors name files
 freely, so both modules carry rules that look arbitrary and are not. Change
 either one with a test beside the change.
 
+The file name is a hint, not the answer. A container states the character as
+fact, so `catalog` overrules the parser wherever the two disagree — that alone
+corrects two mods in a real library, both parsed as Jean Grey because "phoenix"
+is one of her aliases and both are Namor skins.
+
+`heroes` learns two tables from the library and keeps them beside the catalog:
+character id to hero, and costume id to name. Both learn by majority, because
+the container overrules the parser and one mis-parsed name would otherwise
+rename every mod for that character. Costume names cannot come from the game —
+its pak index is AES encrypted and its entries are Oodle compressed, so both a
+publisher key and a proprietary decompressor would be needed. The skill under
+`.claude/skills/marvel-rivals-modding/` records the measurements behind that.
+
 ## Versions and releases
 
 `__version__` in `src/regalia/__init__.py` is the only version. Hatchling reads
