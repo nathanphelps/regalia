@@ -27,9 +27,10 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .. import credentials, nxm
-from ..environment import download_dir, steam_installs
-from ..paths import GameNotFound, discover_game
+from .. import credentials, library, nxm
+from ..config import suggested_import_dir
+from ..environment import steam_installs
+from ..paths import LIBRARY_DIR, GameNotFound, discover_game
 from ..readiness import Check, Level, run_checks
 
 MARK_COLOURS = {
@@ -55,8 +56,10 @@ class SetupPage(QWidget):
         layout.addWidget(title)
 
         intro = QLabel(
-            "Three things cannot be guessed. Fill them in, then work through "
-            "anything still marked below."
+            "Two things cannot be guessed: where the game is, and your Nexus "
+            "key. Everything else is checked below, with the fix beside it. "
+            "Come back here any time something breaks — Settings is for "
+            "changing what already works."
         )
         intro.setWordWrap(True)
         layout.addWidget(intro)
@@ -82,12 +85,17 @@ class SetupPage(QWidget):
         browse_game.clicked.connect(self.pick_game)
         form.addRow("Game folder", _row(self.game_root, detect, browse_game))
 
-        self.downloads = QLineEdit()
-        create = QPushButton("Create")
-        create.clicked.connect(self.create_downloads)
-        browse_downloads = QPushButton("Browse…")
-        browse_downloads.clicked.connect(self.pick_downloads)
-        form.addRow("Downloads folder", _row(self.downloads, create, browse_downloads))
+        # Not a question. The tool owns this folder, and asking the user to
+        # nominate one only ever produced a bad answer: a download folder holds
+        # everything the browser saves, the desktop offers to empty it, and a
+        # mod is keyed by its archive path, so a file that moves loses its
+        # record. What is worth offering is a way to bring existing mods in.
+        self.library = QLabel()
+        self.library.setObjectName("eyebrow")
+        self.library.setWordWrap(True)
+        bring = QPushButton("Import mods you already have…")
+        bring.clicked.connect(self.import_archives)
+        form.addRow("Mod library", _row(self.library, bring))
 
         self.key = QLineEdit()
         self.key.setEchoMode(QLineEdit.EchoMode.Password)
@@ -154,21 +162,39 @@ class SetupPage(QWidget):
         if path:
             self.game_root.setText(path)
 
-    def pick_downloads(self) -> None:
-        path = QFileDialog.getExistingDirectory(self, "Where downloads land")
-        if path:
-            self.downloads.setText(path)
+    def import_archives(self) -> None:
+        """Copy archives the user already downloaded into the library.
 
-    def create_downloads(self) -> None:
-        path = Path(self.downloads.text().strip()).expanduser()
-        if not path.name:
+        Copying rather than moving, because the folder chosen is usually the
+        user's own downloads and emptying it without being asked would be a
+        surprise. The originals can go once they are satisfied.
+        """
+        start = str(suggested_import_dir())
+        path = QFileDialog.getExistingDirectory(self, "Folder holding mods", start)
+        if not path:
             return
-        try:
-            path.mkdir(parents=True, exist_ok=True)
-        except OSError as error:
-            self.context.notify(f"Could not create {path}: {error}", True)
-            return
-        self.context.notify(f"Created {path}")
+
+        def work(progress):
+            return library.import_all([Path(path)], move=False)
+
+        self.context.tasks.submit(
+            "Import mods",
+            work,
+            on_result=self._imported,
+            on_error=lambda message, trace: self.context.notify(message, True),
+        )
+
+    def _imported(self, log: list[str]) -> None:
+        added = sum(1 for line in log if line.startswith(("copied", "moved")))
+        held = sum(1 for line in log if line.startswith("already"))
+        failed = sum(1 for line in log if line.startswith("failed"))
+        message = f"Imported {added} archive(s)"
+        if held:
+            message += f", {held} already held"
+        if failed:
+            message += f", {failed} failed"
+        self.context.notify(message, bool(failed))
+        self.context.refresh_all()
         self.refresh()
 
     def save_key(self) -> None:
@@ -185,9 +211,6 @@ class SetupPage(QWidget):
         config = self.context.config
         root = self.game_root.text().strip()
         config.game_root = Path(root).expanduser() if root else None
-        downloads = self.downloads.text().strip()
-        if downloads:
-            config.scan_dirs = [Path(downloads).expanduser()]
         config.save()
         self.context.rediscover()
         self.context.notify("Settings saved")
@@ -211,9 +234,13 @@ class SetupPage(QWidget):
                 self.context.game.root if self.context.game else None
             )
             self.game_root.setText(str(known) if known else "")
-        if not self.downloads.text().strip():
-            first = config.scan_dirs[0] if config.scan_dirs else download_dir()
-            self.downloads.setText(str(first))
+        count, size = library.size()
+        watched = (
+            f"  ·  also watching {len(config.scan_dirs)} folder(s)"
+            if config.scan_dirs
+            else ""
+        )
+        self.library.setText(f"{LIBRARY_DIR}  ·  {count} archive(s){watched}")
 
         while self.checks_layout.count():
             item = self.checks_layout.takeAt(0)

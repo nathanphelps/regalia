@@ -1317,7 +1317,7 @@ class RegaliaApp(App[None]):
                 int(index * 100 / max(total, 1)),
             )
 
-        outcome = nexus_collections.install(
+        outcome = nexus_collections.fetch(
             self.client,
             plan,
             destination,
@@ -1336,7 +1336,14 @@ class RegaliaApp(App[None]):
             self.log_line(f"[red]nexus[/] {mod.mod_name}: {reason}")
 
         assert self.game is not None
+        # The rescan has to come between the download and the install, so the
+        # catalog holds a record for each archive that arrived.
         self.catalog.rescan(self.config.scan_dirs, self.game.mods)
+        outcome.installed, outcome.problems = nexus_collections.deploy(
+            self.catalog.mods, outcome.downloaded, self.game.mods
+        )
+        for line in outcome.problems:
+            self.log_line(f"[red]install[/] {line}")
         self.catalog.tag_collection(
             plan.collection.slug,
             set(outcome.downloaded),
@@ -1347,7 +1354,7 @@ class RegaliaApp(App[None]):
         self.refresh_table()
 
         self.notify(
-            f"{len(outcome.downloaded)} downloaded, "
+            f"{len(outcome.downloaded)} downloaded, {outcome.installed} installed, "
             f"{len(outcome.skipped)} already held, {len(outcome.failed)} failed"
         )
 

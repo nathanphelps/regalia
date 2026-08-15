@@ -48,18 +48,19 @@ from .. import (
     credentials,
     installer,
     library,
+    maintenance,
     nxm,
     patch,
     steam,
     variants,
 )
 from ..catalog import Catalog
-from ..config import Config
+from ..config import Config, suggested_import_dir
 from ..model import Mod, State
 from ..nexus import NexusClient, NexusFile, NexusImage, NexusMod, Page
 from ..nexus import collections as collection_ops
 from ..nexus.download import download_file
-from ..paths import DATA_DIR, GamePaths
+from ..paths import DATA_DIR, LIBRARY_DIR, GamePaths
 from .images import ImageCache
 from .state import GuiState
 from .tasks import TaskCoordinator
@@ -1690,15 +1691,23 @@ class CollectionDialog(QDialog):
             def item(index, total, mod):
                 progress(int((index - 1) / max(total, 1) * 100), mod.mod_name)
 
-            outcome = collection_ops.install(
+            outcome = collection_ops.fetch(
                 self.context.client,
                 plan,
                 library.ensure(),
                 on_item=item,
             )
             if self.context.game:
+                # The rescan has to come between the download and the install,
+                # so the catalog holds a record for each archive that arrived.
                 self.context.catalog.rescan(
                     self.context.config.scan_dirs, self.context.game.mods
+                )
+                progress(99, "installing")
+                outcome.installed, outcome.problems = collection_ops.deploy(
+                    self.context.catalog.mods,
+                    outcome.downloaded,
+                    self.context.game.mods,
                 )
             pairs = {(mod.mod_id, mod.file_id) for mod in plan.wanted}
             self.context.catalog.tag_collection(self.collection.slug, pairs)
@@ -1714,10 +1723,15 @@ class CollectionDialog(QDialog):
         self.accept()
 
     def _done(self, outcome) -> None:
-        message = f"Downloaded {len(outcome.downloaded)} collection file(s)"
+        message = (
+            f"Downloaded {len(outcome.downloaded)} file(s), "
+            f"installed {outcome.installed}"
+        )
         if outcome.failed:
-            message += f" · {len(outcome.failed)} failed"
-        self.context.notify(message, bool(outcome.failed))
+            message += f" · {len(outcome.failed)} download(s) failed"
+        if outcome.problems:
+            message += f" · {len(outcome.problems)} install(s) failed"
+        self.context.notify(message, bool(outcome.failed or outcome.problems))
         self.context.refresh_all()
 
 
@@ -2122,9 +2136,42 @@ class SettingsPage(QWidget):
             )
         index = self.cache.findData(context.config.image_cache_mb)
         self.cache.setCurrentIndex(index if index >= 0 else 2)
-        form.addRow("Nexus API key", self.key)
-        form.addRow("Game root", game_box)
-        form.addRow("Scan folders", scan_box)
+        # Grouped, and named the same as the Setup page. The two screens used
+        # different words for one thing — "Game root" against "Game folder",
+        # "Scan folders" against "Downloads folder" — which read as four
+        # settings instead of two.
+        self.library_line = QLabel()
+        self.library_line.setWordWrap(True)
+        self.library_line.setObjectName("eyebrow")
+        import_button = QPushButton("Import…")
+        import_button.clicked.connect(self.import_archives)
+        open_library = QPushButton("Open folder")
+        open_library.clicked.connect(
+            lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(LIBRARY_DIR)))
+        )
+        library_row = QHBoxLayout()
+        library_row.addWidget(self.library_line, 1)
+        library_row.addWidget(import_button)
+        library_row.addWidget(open_library)
+        library_box = QWidget()
+        library_box.setLayout(library_row)
+
+        watch_hint = QLabel(
+            "Optional. The library above is always read; add a folder here only "
+            "to watch archives you keep somewhere else."
+        )
+        watch_hint.setWordWrap(True)
+        watch_hint.setObjectName("eyebrow")
+
+        form.addRow(section_title("Game"), QWidget())
+        form.addRow("Game folder", game_box)
+        form.addRow(section_title("Mods"), QWidget())
+        form.addRow("Mod library", library_box)
+        form.addRow("Extra folders to watch", scan_box)
+        form.addRow("", watch_hint)
+        form.addRow(section_title("Nexus"), QWidget())
+        form.addRow("API key", self.key)
+        form.addRow(section_title("Appearance"), QWidget())
         form.addRow("Theme", self.theme)
         form.addRow("Library density", self.density)
         form.addRow("Image cache", self.cache)
@@ -2142,11 +2189,17 @@ class SettingsPage(QWidget):
         cache_layout.addWidget(inspect_cache)
         cache_layout.addWidget(clear_cache)
         layout.addWidget(cache_panel)
+
+        # Save sits with the form it saves. Everything below it is an action
+        # that takes effect the moment it is pressed, and the destructive ones
+        # go last so nothing lands under the pointer on the way to Save.
         save = QPushButton("Save settings")
         save.clicked.connect(self.save)
         layout.addWidget(save)
+
         layout.addWidget(section_title("Nexus browser links"))
         self.handler = QLabel()
+        self.handler.setWordWrap(True)
         layout.addWidget(self.handler)
         handlers = QHBoxLayout()
         register = QPushButton("Register nxm:// handler")
@@ -2157,11 +2210,41 @@ class SettingsPage(QWidget):
         handlers.addWidget(unregister)
         handlers.addStretch()
         layout.addLayout(handlers)
+
+        layout.addWidget(section_title("Start over"))
+        reset_hint = QLabel(
+            "Each of these lists exactly what it would remove before it removes "
+            "anything. Your archives are never touched."
+        )
+        reset_hint.setWordWrap(True)
+        reset_hint.setObjectName("eyebrow")
+        layout.addWidget(reset_hint)
+        resets = QHBoxLayout()
+        for label, scopes, title in (
+            ("Unlink every mod", ["links"], "Remove the game's links"),
+            (
+                "Delete extracted files",
+                ["links", "store"],
+                "Remove the links and the extracted files",
+            ),
+            (
+                "Forget everything",
+                ["links", "store", "catalog", "cache"],
+                "Remove links, extracted files, the mod list and artwork",
+            ),
+        ):
+            button = QPushButton(label)
+            button.clicked.connect(lambda _=False, s=scopes, t=title: self.reset(s, t))
+            resets.addWidget(button)
+        resets.addStretch()
+        layout.addLayout(resets)
+
         layout.addStretch()
         self._cache_disk: tuple[int, int] | None = None
         context.images.changed.connect(self.refresh_cache)
         self.refresh_cache()
         self.refresh_handler()
+        self.refresh_library()
 
     def refresh_cache(self, measure: bool = False) -> None:
         if measure:
@@ -2183,6 +2266,64 @@ class SettingsPage(QWidget):
         self._cache_disk = (0, 0)
         self.refresh_cache()
         self.context.notify(f"Cleared {count:,} cached images · {human_size(size)}")
+
+    def import_archives(self) -> None:
+        """Bring archives from anywhere into the library the tool manages."""
+        start = str(suggested_import_dir())
+        path = QFileDialog.getExistingDirectory(self, "Folder holding mods", start)
+        if not path:
+            return
+        self.context.tasks.submit(
+            "Import mods",
+            lambda progress: library.import_all([Path(path)], move=False),
+            on_result=self._imported,
+            on_error=lambda message, trace: self.context.notify(message, True),
+        )
+
+    def _imported(self, log: list[str]) -> None:
+        added = sum(1 for line in log if line.startswith(("copied", "moved")))
+        self.context.notify(f"Imported {added} archive(s)")
+        self.refresh_library()
+        self.context.refresh_all()
+
+    def refresh_library(self) -> None:
+        count, total = library.size()
+        self.library_line.setText(
+            f"{LIBRARY_DIR}  ·  {count} archive(s), {maintenance.human(total)}"
+        )
+
+    def reset(self, scopes: list[str], title: str) -> None:
+        """Show exactly what would go, then remove it only if the user agrees.
+
+        The list is the point. "Reset" means different things to different
+        people, and the only way to be sure is to name every file first.
+        """
+        game = self.context.game
+        claimed = {name for mod in self.context.catalog.mods for name in mod.all_files}
+        todo = maintenance.plan(scopes, game.mods if game else None, claimed)
+        if todo.is_empty:
+            self.context.notify("Nothing to remove")
+            return
+
+        lines = [
+            f"{scope}: {len(items)} item(s) — {maintenance.DESCRIPTIONS[scope]}"
+            for scope, items in todo.by_scope().items()
+        ]
+        answer = QMessageBox.warning(
+            self,
+            title,
+            f"This removes {todo.count} item(s), {maintenance.human(todo.bytes)}:\n\n"
+            + "\n".join(lines)
+            + "\n\nThis cannot be undone.",
+            QMessageBox.StandardButton.Cancel | QMessageBox.StandardButton.Ok,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if answer != QMessageBox.StandardButton.Ok:
+            return
+        for line in maintenance.run(todo):
+            self.context.notify(line)
+        self.context.refresh_all()
+        self.refresh_library()
 
     def pick_game(self) -> None:
         path = QFileDialog.getExistingDirectory(self, "Marvel Rivals folder")
